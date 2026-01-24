@@ -93,44 +93,68 @@ stats_lock = asyncio.Lock()  # 改为异步锁
 
 async def load_stats():
     """加载统计数据（异步）。"""
+    data = None
     if storage.is_database_enabled():
         try:
             data = await asyncio.to_thread(storage.load_stats_sync)
-            if isinstance(data, dict):
-                return data
+            if not isinstance(data, dict):
+                data = None
         except Exception as e:
             logger.error(f"[STATS] 数据库加载失败: {str(e)[:50]}")
-    try:
-        if os.path.exists(STATS_FILE):
-            async with aiofiles.open(STATS_FILE, 'r', encoding='utf-8') as f:
-                content = await f.read()
-                return json.loads(content)
-    except Exception:
-        pass
-    return {
-        "total_visitors": 0,
-        "total_requests": 0,
-        "request_timestamps": [],
-        "model_request_timestamps": {},
-        "failure_timestamps": [],
-        "rate_limit_timestamps": [],
-        "visitor_ips": {},
-        "account_conversations": {},
-        "recent_conversations": []
-    }
+    if data is None:
+        try:
+            if os.path.exists(STATS_FILE):
+                async with aiofiles.open(STATS_FILE, 'r', encoding='utf-8') as f:
+                    content = await f.read()
+                    data = json.loads(content)
+        except Exception:
+            pass
+
+    # 如果没有加载到数据，返回默认值
+    if data is None:
+        data = {
+            "total_visitors": 0,
+            "total_requests": 0,
+            "request_timestamps": [],
+            "model_request_timestamps": {},
+            "failure_timestamps": [],
+            "rate_limit_timestamps": [],
+            "visitor_ips": {},
+            "account_conversations": {},
+            "recent_conversations": []
+        }
+
+    # 将列表转换为 deque（限制大小防止内存无限增长）
+    if isinstance(data.get("request_timestamps"), list):
+        data["request_timestamps"] = deque(data["request_timestamps"], maxlen=20000)
+    if isinstance(data.get("failure_timestamps"), list):
+        data["failure_timestamps"] = deque(data["failure_timestamps"], maxlen=10000)
+    if isinstance(data.get("rate_limit_timestamps"), list):
+        data["rate_limit_timestamps"] = deque(data["rate_limit_timestamps"], maxlen=10000)
+
+    return data
 
 async def save_stats(stats):
     """保存统计数据（异步，避免阻塞事件循环）"""
+    # 将 deque 转换为 list 以便 JSON 序列化
+    stats_to_save = stats.copy()
+    if isinstance(stats_to_save.get("request_timestamps"), deque):
+        stats_to_save["request_timestamps"] = list(stats_to_save["request_timestamps"])
+    if isinstance(stats_to_save.get("failure_timestamps"), deque):
+        stats_to_save["failure_timestamps"] = list(stats_to_save["failure_timestamps"])
+    if isinstance(stats_to_save.get("rate_limit_timestamps"), deque):
+        stats_to_save["rate_limit_timestamps"] = list(stats_to_save["rate_limit_timestamps"])
+
     if storage.is_database_enabled():
         try:
-            saved = await asyncio.to_thread(storage.save_stats_sync, stats)
+            saved = await asyncio.to_thread(storage.save_stats_sync, stats_to_save)
             if saved:
                 return
         except Exception as e:
             logger.error(f"[STATS] 数据库保存失败: {str(e)[:50]}")
     try:
         async with aiofiles.open(STATS_FILE, 'w', encoding='utf-8') as f:
-            await f.write(json.dumps(stats, ensure_ascii=False, indent=2))
+            await f.write(json.dumps(stats_to_save, ensure_ascii=False, indent=2))
     except Exception as e:
         logger.error(f"[STATS] 保存统计数据失败: {str(e)[:50]}")
 
@@ -138,10 +162,10 @@ async def save_stats(stats):
 global_stats = {
     "total_visitors": 0,
     "total_requests": 0,
-    "request_timestamps": [],
+    "request_timestamps": deque(maxlen=20000),
     "model_request_timestamps": {},
-    "failure_timestamps": [],
-    "rate_limit_timestamps": [],
+    "failure_timestamps": deque(maxlen=10000),
+    "rate_limit_timestamps": deque(maxlen=10000),
     "visitor_ips": {},
     "account_conversations": {},
     "recent_conversations": []
@@ -240,6 +264,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger("gemini")
 
+# ---------- Linux zombie process reaper ----------
+# DrissionPage / Chromium may spawn subprocesses that exit without being waited on,
+# which can accumulate as zombies (<defunct>) in long-running services.
+try:
+    from core.child_reaper import install_child_reaper
+
+    install_child_reaper(log=lambda m: logger.warning(m))
+except Exception:
+    # Never fail startup due to optional process reaper.
+    pass
+
 # 添加内存日志处理器
 memory_handler = MemoryLogHandler()
 memory_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", datefmt="%H:%M:%S"))
@@ -250,7 +285,8 @@ logger.addHandler(memory_handler)
 TIMEOUT_SECONDS = 600
 API_KEY = config.basic.api_key
 ADMIN_KEY = config.security.admin_key
-PROXY = config.basic.proxy
+PROXY_FOR_AUTH = config.basic.proxy_for_auth
+PROXY_FOR_CHAT = config.basic.proxy_for_chat
 BASE_URL = config.basic.base_url
 SESSION_SECRET_KEY = config.security.session_secret_key
 SESSION_EXPIRE_HOURS = config.session.expire_hours
@@ -282,7 +318,7 @@ MODEL_MAPPING = {
 }
 
 # ---------- HTTP 客户端 ----------
-def _build_http_client():
+def _build_http_client(specific_proxy=None):
     client_kwargs = {
         "verify": False,
         "http2": False,
@@ -305,18 +341,29 @@ def _build_http_client():
             client_kwargs=client_kwargs,
         )
 
-    proxy_url = normalize_proxy_url(PROXY or "")
+    proxy_url = normalize_proxy_url(specific_proxy or "")
     if proxy_url:
         try:
             return httpx.AsyncClient(proxy=proxy_url, **client_kwargs)
-        except httpx.InvalidURL:
-            logger.warning(f"[CONFIG] 全局代理格式无效，已忽略: {PROXY}")
+        except (httpx.InvalidURL, Exception):
+            logger.warning(f"[CONFIG] 代理格式无效，已忽略: {specific_proxy}")
             return httpx.AsyncClient(proxy=None, **client_kwargs)
 
     return httpx.AsyncClient(proxy=None, **client_kwargs)
 
 
-http_client = _build_http_client()
+# 对话操作客户端（用于JWT获取、创建会话、发送消息）
+http_client = _build_http_client(PROXY_FOR_CHAT)
+
+# 对话流式客户端（用于流式响应）
+http_client_chat = _build_http_client(PROXY_FOR_CHAT)
+
+# 账户操作客户端（用于注册/登录/刷新）
+http_client_auth = _build_http_client(PROXY_FOR_AUTH)
+
+# 打印代理配置日志
+logger.info(f"[PROXY] Account operations (register/login/refresh): {PROXY_FOR_AUTH if PROXY_FOR_AUTH else 'disabled'}")
+logger.info(f"[PROXY] Chat operations (JWT/session/messages): {PROXY_FOR_CHAT if PROXY_FOR_CHAT else 'disabled'}")
 
 # ---------- 工具函数 ----------
 def get_base_url(request: Request) -> str:
@@ -372,7 +419,7 @@ try:
     from core.login_service import LoginService
     register_service = RegisterService(
         multi_account_mgr,
-        http_client,
+        http_client_auth,
         USER_AGENT,
         ACCOUNT_FAILURE_THRESHOLD,
         RATE_LIMIT_COOLDOWN_SECONDS,
@@ -382,7 +429,7 @@ try:
     )
     login_service = LoginService(
         multi_account_mgr,
-        http_client,
+        http_client_auth,
         USER_AGENT,
         ACCOUNT_FAILURE_THRESHOLD,
         RATE_LIMIT_COOLDOWN_SECONDS,
@@ -923,22 +970,21 @@ async def admin_stats(request: Request):
         return buckets
 
     async with stats_lock:
-        global_stats.setdefault("request_timestamps", [])
-        global_stats.setdefault("failure_timestamps", [])
-        global_stats.setdefault("rate_limit_timestamps", [])
+        global_stats.setdefault("request_timestamps", deque(maxlen=20000))
+        global_stats.setdefault("failure_timestamps", deque(maxlen=10000))
+        global_stats.setdefault("rate_limit_timestamps", deque(maxlen=10000))
         global_stats.setdefault("model_request_timestamps", {})
-        global_stats["request_timestamps"] = [
-            ts for ts in global_stats["request_timestamps"]
-            if now - ts < window_seconds
-        ]
-        global_stats["failure_timestamps"] = [
-            ts for ts in global_stats["failure_timestamps"]
-            if now - ts < window_seconds
-        ]
-        global_stats["rate_limit_timestamps"] = [
-            ts for ts in global_stats["rate_limit_timestamps"]
-            if now - ts < window_seconds
-        ]
+
+        # 清理过期数据，保持 deque 类型
+        cleaned_request_ts = [ts for ts in global_stats["request_timestamps"] if now - ts < window_seconds]
+        global_stats["request_timestamps"] = deque(cleaned_request_ts, maxlen=20000)
+
+        cleaned_failure_ts = [ts for ts in global_stats["failure_timestamps"] if now - ts < window_seconds]
+        global_stats["failure_timestamps"] = deque(cleaned_failure_ts, maxlen=10000)
+
+        cleaned_rate_limit_ts = [ts for ts in global_stats["rate_limit_timestamps"] if now - ts < window_seconds]
+        global_stats["rate_limit_timestamps"] = deque(cleaned_rate_limit_ts, maxlen=10000)
+
         model_request_timestamps = {}
         for model, timestamps in global_stats["model_request_timestamps"].items():
             model_request_timestamps[model] = [
@@ -1043,6 +1089,19 @@ async def admin_start_register(
     task = await register_service.start_register(count=count, domain=domain, mail_provider=mail_provider)
     return task.to_dict()
 
+
+@app.post("/admin/register/cancel/{task_id}")
+@require_login()
+async def admin_cancel_register_task(request: Request, task_id: str, payload: dict = Body(default=None)):
+    if not register_service:
+        raise HTTPException(503, "register service unavailable")
+    payload = payload or {}
+    reason = payload.get("reason") or "cancelled"
+    task = await register_service.cancel_task(task_id, reason=reason)
+    if not task:
+        raise HTTPException(404, "task not found")
+    return task.to_dict()
+
 @app.get("/admin/register/task/{task_id}")
 @require_login()
 async def admin_get_register_task(request: Request, task_id: str):
@@ -1071,6 +1130,19 @@ async def admin_start_login(request: Request, account_ids: List[str] = Body(...)
     task = await login_service.start_login(account_ids)
     return task.to_dict()
 
+
+@app.post("/admin/login/cancel/{task_id}")
+@require_login()
+async def admin_cancel_login_task(request: Request, task_id: str, payload: dict = Body(default=None)):
+    if not login_service:
+        raise HTTPException(503, "login service unavailable")
+    payload = payload or {}
+    reason = payload.get("reason") or "cancelled"
+    task = await login_service.cancel_task(task_id, reason=reason)
+    if not task:
+        raise HTTPException(404, "task not found")
+    return task.to_dict()
+
 @app.get("/admin/login/task/{task_id}")
 @require_login()
 async def admin_get_login_task(request: Request, task_id: str):
@@ -1096,8 +1168,41 @@ async def admin_get_current_login_task(request: Request):
 async def admin_check_login_refresh(request: Request):
     if not login_service:
         raise HTTPException(503, "login service unavailable")
-    await login_service.check_and_refresh()
-    return {"status": "ok"}
+    task = await login_service.check_and_refresh()
+    if not task:
+        return {"status": "idle"}
+    return task.to_dict()
+
+@app.post("/admin/auto-refresh/pause")
+@require_login()
+async def admin_pause_auto_refresh(request: Request):
+    """暂停自动刷新（运行时开关，不保存到数据库）"""
+    if not login_service:
+        raise HTTPException(503, "login service unavailable")
+    login_service.pause_auto_refresh()
+    return {"status": "paused", "message": "Auto-refresh paused (runtime only)"}
+
+@app.post("/admin/auto-refresh/resume")
+@require_login()
+async def admin_resume_auto_refresh(request: Request):
+    """恢复自动刷新并立即执行一次检查"""
+    if not login_service:
+        raise HTTPException(503, "login service unavailable")
+    was_paused = login_service.resume_auto_refresh()
+    # 如果之前是暂停状态，立即执行一次检查
+    if was_paused:
+        asyncio.create_task(login_service.check_and_refresh())
+        return {"status": "active", "message": "Auto-refresh resumed and checking now"}
+    return {"status": "active", "message": "Auto-refresh resumed"}
+
+@app.get("/admin/auto-refresh/status")
+@require_login()
+async def admin_get_auto_refresh_status(request: Request):
+    """获取自动刷新状态"""
+    if not login_service:
+        raise HTTPException(503, "login service unavailable")
+    is_paused = login_service.is_auto_refresh_paused()
+    return {"paused": is_paused, "status": "paused" if is_paused else "active"}
 
 @app.delete("/admin/accounts/{account_id}")
 @require_login()
@@ -1196,16 +1301,6 @@ async def admin_get_settings(request: Request):
             "api_key": config.basic.api_key,
             "base_url": config.basic.base_url,
             "proxy": config.basic.proxy,
-            "outbound_proxy": {
-                "enabled": outbound.enabled,
-                "protocol": outbound.protocol,
-                "host": outbound.host,
-                "port": outbound.port,
-                "username": outbound.username,
-                "password": outbound_password,
-                "no_proxy": outbound.no_proxy,
-                "direct_fallback": outbound.direct_fallback,
-            },
             "duckmail_base_url": config.basic.duckmail_base_url,
             "duckmail_api_key": config.basic.duckmail_api_key,
             "duckmail_verify_ssl": config.basic.duckmail_verify_ssl,
@@ -1245,11 +1340,11 @@ async def admin_get_settings(request: Request):
 @require_login()
 async def admin_update_settings(request: Request, new_settings: dict = Body(...)):
     """更新系统设置"""
-    global API_KEY, PROXY, BASE_URL, LOGO_URL, CHAT_URL
+    global API_KEY, PROXY_FOR_AUTH, PROXY_FOR_CHAT, BASE_URL, LOGO_URL, CHAT_URL
     global IMAGE_GENERATION_ENABLED, IMAGE_GENERATION_MODELS
     global MAX_NEW_SESSION_TRIES, MAX_REQUEST_RETRIES, MAX_ACCOUNT_SWITCH_TRIES
     global ACCOUNT_FAILURE_THRESHOLD, RATE_LIMIT_COOLDOWN_SECONDS, SESSION_CACHE_TTL_SECONDS, AUTO_REFRESH_ACCOUNTS_SECONDS
-    global SESSION_EXPIRE_HOURS, multi_account_mgr, http_client
+    global SESSION_EXPIRE_HOURS, multi_account_mgr, http_client, http_client_chat, http_client_auth
 
     try:
         basic = dict(new_settings.get("basic") or {})
@@ -1300,7 +1395,6 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
 
         # 保存旧配置用于对比
         old_proxy = PROXY
-        old_outbound_fingerprint = config.basic.outbound_proxy.fingerprint()
         old_retry_config = {
             "account_failure_threshold": ACCOUNT_FAILURE_THRESHOLD,
             "rate_limit_cooldown_seconds": RATE_LIMIT_COOLDOWN_SECONDS,
@@ -1315,7 +1409,8 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
 
         # 更新全局变量（实时生效）
         API_KEY = config.basic.api_key
-        PROXY = config.basic.proxy
+        PROXY_FOR_AUTH = config.basic.proxy_for_auth
+        PROXY_FOR_CHAT = config.basic.proxy_for_chat
         BASE_URL = config.basic.base_url
         LOGO_URL = config.public_display.logo_url
         CHAT_URL = config.public_display.chat_url
@@ -1331,16 +1426,31 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
         SESSION_EXPIRE_HOURS = config.session.expire_hours
 
         # 检查是否需要重建 HTTP 客户端（代理变化）
-        outbound_changed = old_outbound_fingerprint != config.basic.outbound_proxy.fingerprint()
-        if (old_proxy != PROXY) or outbound_changed:
-            logger.info("[CONFIG] 代理配置已变化，重建 HTTP 客户端")
-            await http_client.aclose()
-            http_client = _build_http_client()
+        if old_proxy != PROXY:
+            logger.info(f"[CONFIG] 代理配置已变化，重建 HTTP 客户端")
+            await http_client.aclose()  # 关闭旧客户端
+            http_client = httpx.AsyncClient(
+                proxy=PROXY or None,
+                verify=False,
+                http2=False,
+                timeout=httpx.Timeout(TIMEOUT_SECONDS, connect=60.0),
+                limits=httpx.Limits(
+                    max_keepalive_connections=100,
+                    max_connections=200
+                )
+            )
+            # 更新所有账户的 http_client 引用
             multi_account_mgr.update_http_client(http_client)
             if register_service:
                 register_service.http_client = http_client
             if login_service:
                 login_service.http_client = http_client
+
+            # 更新注册/登录服务的 http_client 引用（账户操作用）
+            if register_service:
+                register_service.http_client = http_client_auth
+            if login_service:
+                login_service.http_client = http_client_auth
 
         # 检查是否需要更新账户管理器配置（重试策略变化）
         retry_changed = (

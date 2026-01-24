@@ -41,12 +41,32 @@
                   class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
                   placeholder="自动检测或手动填写"
                 />
+                <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <span>账户操作代理</span>
+                  <HelpTip text="用于注册/登录/刷新操作的代理，留空则禁用" />
+                </div>
+                <input
+                  v-model="localSettings.basic.proxy_for_auth"
+                  type="text"
+                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="http://127.0.0.1:7890"
+                />
+                <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <span>聊天操作代理</span>
+                  <HelpTip text="用于 JWT/会话/消息操作的代理，留空则禁用" />
+                </div>
+                <input
+                  v-model="localSettings.basic.proxy_for_chat"
+                  type="text"
+                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="http://127.0.0.1:7890"
+                />
                 <label class="block text-xs text-muted-foreground">（旧）全局代理地址</label>
                 <input
                   v-model="localSettings.basic.proxy"
                   type="text"
                   class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
-                  placeholder="http://127.0.0.1:7890"
+                  placeholder="旧版本兼容"
                 />
               </div>
             </div>

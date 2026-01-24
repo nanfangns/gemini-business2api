@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from core.account import load_accounts_from_source
-from core.base_task_service import BaseTask, BaseTaskService, TaskStatus
+from core.base_task_service import BaseTask, BaseTaskService, TaskCancelledError, TaskStatus
 from core.config import config
 from core.duckmail_client import DuckMailClient
 from core.gptmail_client import GPTMailClient
@@ -58,35 +58,54 @@ class LoginService(BaseTaskService[LoginTask]):
             log_prefix="REFRESH",
         )
         self._is_polling = False
+        self._auto_refresh_paused = True  # 运行时开关：默认暂停（不自动刷新）
 
     async def start_login(self, account_ids: List[str]) -> LoginTask:
-        """启动登录任务"""
+        """启动登录任务（支持排队）。"""
         async with self._lock:
-            if self._current_task_id:
-                current = self._tasks.get(self._current_task_id)
-                if current and current.status == TaskStatus.RUNNING:
-                    raise ValueError("已有刷新任务正在运行中")
+            # 去重：同一批账号的 pending/running 任务直接复用
+            normalized = list(account_ids or [])
+            for existing in self._tasks.values():
+                if (
+                    isinstance(existing, LoginTask)
+                    and existing.account_ids == normalized
+                    and existing.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+                ):
+                    return existing
 
-            task = LoginTask(id=str(uuid.uuid4()), account_ids=account_ids)
+            task = LoginTask(id=str(uuid.uuid4()), account_ids=normalized)
             self._tasks[task.id] = task
-            self._current_task_id = task.id
-            self._append_log(task, "info", f"📝 创建刷新任务 (账号数量: {len(account_ids)})")
-            asyncio.create_task(self._run_login_async(task))
+            self._append_log(task, "info", f"📝 创建刷新任务 (账号数量: {len(task.account_ids)})")
+            await self._enqueue_task(task)
             return task
 
+    def _execute_task(self, task: LoginTask):
+        return self._run_login_async(task)
+
     async def _run_login_async(self, task: LoginTask) -> None:
-        """异步执行登录任务"""
-        task.status = TaskStatus.RUNNING
+        """异步执行登录任务（支持取消）。"""
         loop = asyncio.get_running_loop()
         self._append_log(task, "info", f"🚀 刷新任务已启动 (共 {len(task.account_ids)} 个账号)")
 
         for idx, account_id in enumerate(task.account_ids, 1):
+            # 检查是否请求取消
+            if task.cancel_requested:
+                self._append_log(task, "warning", f"login task cancelled: {task.cancel_reason or 'cancelled'}")
+                task.status = TaskStatus.CANCELLED
+                task.finished_at = time.time()
+                return
+
             try:
                 self._append_log(task, "info", f"📊 进度: {idx}/{len(task.account_ids)}")
                 self._append_log(task, "info", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                 self._append_log(task, "info", f"🔄 开始刷新账号: {account_id}")
                 self._append_log(task, "info", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                 result = await loop.run_in_executor(self._executor, self._refresh_one, account_id, task)
+            except TaskCancelledError:
+                # 线程侧已触发取消，直接结束任务
+                task.status = TaskStatus.CANCELLED
+                task.finished_at = time.time()
+                return
             except Exception as exc:
                 result = {"success": False, "email": account_id, "error": str(exc)}
             task.progress += 1
@@ -105,8 +124,12 @@ class LoginService(BaseTaskService[LoginTask]):
                 self._append_log(task, "error", f"❌ 失败原因: {error}")
                 self._append_log(task, "error", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-        task.status = TaskStatus.SUCCESS if task.fail_count == 0 else TaskStatus.FAILED
+        if task.cancel_requested:
+            task.status = TaskStatus.CANCELLED
+        else:
+            task.status = TaskStatus.SUCCESS if task.fail_count == 0 else TaskStatus.FAILED
         task.finished_at = time.time()
+        self._append_log(task, "info", f"login task finished ({task.success_count}/{len(task.account_ids)})")
         self._current_task_id = None
         self._append_log(task, "info", f"🏁 刷新任务完成 (成功: {task.success_count}, 失败: {task.fail_count}, 总计: {len(task.account_ids)})")
 
@@ -134,7 +157,8 @@ class LoginService(BaseTaskService[LoginTask]):
         mail_refresh_token = account.get("mail_refresh_token")
         mail_tenant = account.get("mail_tenant") or "consumers"
 
-        log_cb = lambda level, message: self._append_log(task, level, f"[{account_id}] {message}")
+        def log_cb(level, message):
+            self._append_log(task, level, f"[{account_id}] {message}")
 
         log_cb("info", f"📧 邮件提供商: {mail_provider}")
 
@@ -213,6 +237,8 @@ class LoginService(BaseTaskService[LoginTask]):
                 headless=headless,
                 log_callback=log_cb,
             )
+        # 允许外部取消时立刻关闭浏览器
+        self._add_cancel_hook(task.id, lambda: getattr(automation, "stop", lambda: None)())
         try:
             log_cb("info", "🔐 执行 Gemini 自动登录...")
             result = automation.login_and_extract(account_id, client)
@@ -292,19 +318,20 @@ class LoginService(BaseTaskService[LoginTask]):
 
         return expiring
 
-    async def check_and_refresh(self) -> None:
+    async def check_and_refresh(self) -> Optional[LoginTask]:
         if os.environ.get("ACCOUNTS_CONFIG"):
             logger.info("[LOGIN] ACCOUNTS_CONFIG set, skipping refresh")
-            return
+            return None
         expiring_accounts = self._get_expiring_accounts()
         if not expiring_accounts:
             logger.debug("[LOGIN] no accounts need refresh")
-            return
+            return None
 
         try:
-            await self.start_login(expiring_accounts)
-        except ValueError as exc:
-            logger.warning("[LOGIN] %s", exc)
+            return await self.start_login(expiring_accounts)
+        except Exception as exc:
+            logger.warning("[LOGIN] refresh enqueue failed: %s", exc)
+            return None
 
     async def start_polling(self) -> None:
         if self._is_polling:
@@ -315,7 +342,11 @@ class LoginService(BaseTaskService[LoginTask]):
         logger.info("[LOGIN] refresh polling started (interval: 30 minutes)")
         try:
             while self._is_polling:
-                await self.check_and_refresh()
+                # 检查运行时开关
+                if not self._auto_refresh_paused:
+                    await self.check_and_refresh()
+                else:
+                    logger.debug("[LOGIN] auto-refresh paused, skipping check")
                 await asyncio.sleep(1800)
         except asyncio.CancelledError:
             logger.info("[LOGIN] polling stopped")
@@ -323,6 +354,23 @@ class LoginService(BaseTaskService[LoginTask]):
             logger.error("[LOGIN] polling error: %s", exc)
         finally:
             self._is_polling = False
+
+    def pause_auto_refresh(self) -> None:
+        """暂停自动刷新（不保存到数据库，重启后恢复）"""
+        self._auto_refresh_paused = True
+        logger.info("[LOGIN] auto-refresh paused (runtime only)")
+
+    def resume_auto_refresh(self) -> None:
+        """恢复自动刷新"""
+        was_paused = self._auto_refresh_paused
+        self._auto_refresh_paused = False
+        logger.info("[LOGIN] auto-refresh resumed")
+        # 如果是从暂停状态恢复，返回 True 表示需要立即检查
+        return was_paused
+
+    def is_auto_refresh_paused(self) -> bool:
+        """获取自动刷新暂停状态"""
+        return self._auto_refresh_paused
 
     def stop_polling(self) -> None:
         self._is_polling = False

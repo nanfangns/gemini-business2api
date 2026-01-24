@@ -70,6 +70,8 @@ class BasicConfig(BaseModel):
     api_key: str = Field(default="", description="API访问密钥（留空则公开访问）")
     base_url: str = Field(default="", description="服务器URL（留空则自动检测）")
     proxy: str = Field(default="", description="代理地址")
+    proxy_for_auth: str = Field(default="", description="账户操作代理地址（注册/登录/刷新，留空则不使用代理）")
+    proxy_for_chat: str = Field(default="", description="对话操作代理地址（JWT/会话/消息，留空则不使用代理）")
     outbound_proxy: OutboundProxyConfig = Field(default_factory=OutboundProxyConfig, description="出站代理（结构化配置）")
     duckmail_base_url: str = Field(default="https://api.duckmail.sbs", description="DuckMail API地址")
     duckmail_api_key: str = Field(default="", description="DuckMail API key")
@@ -190,10 +192,32 @@ class ConfigManager:
             direct_fallback=_parse_bool(outbound_data.get("direct_fallback"), True),
         )
 
+        # 兼容旧配置：如果存在旧的 proxy 字段，迁移到新字段
+        old_proxy = basic_data.get("proxy", "")
+        old_proxy_for_auth_bool = basic_data.get("proxy_for_auth")
+        old_proxy_for_chat_bool = basic_data.get("proxy_for_chat")
+
+        # 新配置优先，如果没有新配置则从旧配置迁移
+        proxy_for_auth = basic_data.get("proxy_for_auth", "")
+        proxy_for_chat = basic_data.get("proxy_for_chat", "")
+
+        # 如果新配置为空且存在旧配置，则迁移
+        if not proxy_for_auth and old_proxy:
+            # 如果旧配置中 proxy_for_auth 是布尔值且为 True，则使用旧的 proxy
+            if isinstance(old_proxy_for_auth_bool, bool) and old_proxy_for_auth_bool:
+                proxy_for_auth = old_proxy
+
+        if not proxy_for_chat and old_proxy:
+            # 如果旧配置中 proxy_for_chat 是布尔值且为 True，则使用旧的 proxy
+            if isinstance(old_proxy_for_chat_bool, bool) and old_proxy_for_chat_bool:
+                proxy_for_chat = old_proxy
+
         basic_config = BasicConfig(
             api_key=basic_data.get("api_key") or "",
             base_url=basic_data.get("base_url") or "",
             proxy=normalize_proxy_url(str(basic_data.get("proxy") or "")),
+            proxy_for_auth=str(proxy_for_auth or "").strip(),
+            proxy_for_chat=str(proxy_for_chat or "").strip(),
             outbound_proxy=outbound_proxy_config,
             duckmail_base_url=basic_data.get("duckmail_base_url") or "https://api.duckmail.sbs",
             duckmail_api_key=str(duckmail_api_key_raw or "").strip(),
@@ -301,9 +325,14 @@ class ConfigManager:
         return self._config.security.session_secret_key
 
     @property
-    def proxy(self) -> str:
-        """代理地址"""
-        return self._config.basic.proxy
+    def proxy_for_auth(self) -> str:
+        """账户操作代理地址"""
+        return self._config.basic.proxy_for_auth
+
+    @property
+    def proxy_for_chat(self) -> str:
+        """对话操作代理地址"""
+        return self._config.basic.proxy_for_chat
 
     @property
     def base_url(self) -> str:
