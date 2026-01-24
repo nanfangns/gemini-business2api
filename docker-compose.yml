@@ -1,17 +1,22 @@
 services:
   gemini-api:
+    build: .
     image: cooooookk/gemini-business2api:latest
     container_name: gemini-business2api
     ports:
       - "7860:7860"
     volumes:
+      - ./main.py:/app/main.py
+      - ./core:/app/core
+      - ./util:/app/util
       - ./data:/app/data
+      - ./.env:/app/.env
     env_file:
       - .env
     restart: unless-stopped
     # 健康检查
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7860/admin/health"]
+      test: [ "CMD", "curl", "-f", "http://localhost:7860/admin/health" ]
       interval: 30s
       timeout: 10s
       retries: 3

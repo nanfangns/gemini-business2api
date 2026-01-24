@@ -22,16 +22,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY requirements.txt .
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        gcc \
-        curl \
-        tzdata \
-        chromium chromium-driver \
-        dbus dbus-x11 \
-        xvfb xauth \
-        libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
-        libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
-        libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 \
-        libcairo2 fonts-liberation fonts-noto-cjk && \
+    gcc \
+    curl \
+    tzdata \
+    chromium chromium-driver \
+    dbus dbus-x11 \
+    xvfb xauth \
+    libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+    libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 \
+    libcairo2 fonts-liberation fonts-noto-cjk && \
     ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
     pip install --no-cache-dir -r requirements.txt && \
     apt-get purge -y gcc && \
@@ -51,7 +51,7 @@ RUN mkdir -p ./data
 
 # 复制启动脚本
 COPY entrypoint.sh .
-RUN chmod +x entrypoint.sh
+RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
 
 # 声明数据卷
 VOLUME ["/app/data"]
