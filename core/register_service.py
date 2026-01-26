@@ -97,9 +97,6 @@ class RegisterService(BaseTaskService[RegisterTask]):
             self._append_log(task, "info", f"register task queued (count={register_count}, domain={domain_value or 'default'})")
             await self._enqueue_task(task)
             self._current_task_id = task.id
-            self._tasks[task.id] = task
-            self._append_log(task, "info", f"register task queued (count={register_count}, domain={domain_value or 'default'})")
-            await self._enqueue_task(task)
             return task
 
     def _execute_task(self, task: RegisterTask):
@@ -144,6 +141,7 @@ class RegisterService(BaseTaskService[RegisterTask]):
         else:
             task.status = TaskStatus.SUCCESS if task.fail_count == 0 else TaskStatus.FAILED
         task.finished_at = time.time()
+        self._current_task_id = None
         self._append_log(task, "info", f"🏁 注册任务完成 (成功: {task.success_count}, 失败: {task.fail_count}, 总计: {task.count})")
     def _register_one(self, task: RegisterTask) -> dict:
         """注册单个账户"""

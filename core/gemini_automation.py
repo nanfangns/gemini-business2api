@@ -257,7 +257,7 @@ class GeminiAutomation:
 
         self._log("info", f"✅ 收到验证码: {code}")
 
-        # Step 6: 输入验证码并提交
+        # Step 6: 输入验证码并直接按回车
         code_input = page.ele("css:input[jsname='ovqh0b']", timeout=3) or \
                      page.ele("css:input[type='tel']", timeout=2)
 
@@ -265,27 +265,14 @@ class GeminiAutomation:
             self._log("error", "❌ 验证码输入框已失效")
             return {"success": False, "error": "code input expired"}
 
-        # 尝试模拟人类输入，失败则降级到直接注入
-        self._log("info", "⌨️ 正在输入验证码 (模拟人类输入)...")
+        self._log("info", "⌨️ 正在输入验证码并通过回车提交...")
         if not self._simulate_human_input(code_input, code):
             self._log("warning", "⚠️ 模拟输入失败，降级为直接输入")
-            code_input.input(code, clear=True)
-            time.sleep(0.5)
-
-        verify_btn = page.ele("css:button[jsname='XooR8e']", timeout=3)
-        if verify_btn:
-            self._log("info", "🖱️ 点击验证按钮 (方法1)")
-            verify_btn.click()
+            code_input.input(f"{code}\n", clear=True)
         else:
-            verify_btn = self._find_verify_button(page)
-            if verify_btn:
-                self._log("info", "🖱️ 点击验证按钮 (方法2)")
-                verify_btn.click()
-            else:
-                self._log("info", "⏎ 按下回车键提交")
-                code_input.input("\n")
+            code_input.input("\n")
 
-        # Step 7: 等待页面自动重定向（提交验证码后 Google 会自动跳转）
+        # Step 7: 等待页面自动重定向
         self._log("info", "⏳ 等待验证后自动跳转...")
         time.sleep(12)  # 增加等待时间，让页面有足够时间完成重定向（如果网络慢可以继续增加）
 
