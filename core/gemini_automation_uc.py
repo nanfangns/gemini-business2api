@@ -84,11 +84,10 @@ class GeminiAutomationUC:
             options.add_argument("--disable-gpu")
             options.add_argument("--disable-software-rasterizer")
             
-            # 关键：检查是否在 Docker/无显示器环境
-            # 如果没有 $DISPLAY 变量且没有设为无头，则强制开启无头模式
-            if not os.environ.get('DISPLAY') and not self.headless:
-                self._log("warning", "⚠️ 检测到无图形界面环境 (Docker/Linux)，强制开启无头模式以防止启动失败")
-                self.headless = True
+            # 如果检测到是在 Linux 环境但没有设置 DISPLAY，尝试默认使用虚拟显示器 :99（如果安装了 Xvfb）
+            if not os.environ.get('DISPLAY'):
+                if not self.headless:
+                    self._log("info", "💡 当前为 Linux 环境，将尝试使用系统的显示接口启动 (若在 Docker 中运行请确保 Xvfb 已启动)")
 
         # 语言设置（确保使用中文界面）
         options.add_argument("--lang=zh-CN")
