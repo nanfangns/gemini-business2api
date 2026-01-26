@@ -76,6 +76,19 @@ class GeminiAutomationUC:
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-setuid-sandbox")
         options.add_argument("--window-size=1280,800")
+        options.add_argument("--disable-dev-shm-usage")
+
+        # Linux 稳定性参数
+        import os
+        if os.name != 'nt':
+            options.add_argument("--disable-gpu")
+            options.add_argument("--disable-software-rasterizer")
+            
+            # 关键：检查是否在 Docker/无显示器环境
+            # 如果没有 $DISPLAY 变量且没有设为无头，则强制开启无头模式
+            if not os.environ.get('DISPLAY') and not self.headless:
+                self._log("warning", "⚠️ 检测到无图形界面环境 (Docker/Linux)，强制开启无头模式以防止启动失败")
+                self.headless = True
 
         # 语言设置（确保使用中文界面）
         options.add_argument("--lang=zh-CN")
@@ -90,8 +103,6 @@ class GeminiAutomationUC:
         # 无头模式
         if self.headless:
             options.add_argument("--headless=new")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--disable-dev-shm-usage")
 
         # User-Agent
         if self.user_agent:

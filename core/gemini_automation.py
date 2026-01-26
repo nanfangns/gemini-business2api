@@ -105,6 +105,17 @@ class GeminiAutomation:
         options.set_argument("--window-size=1280,800")
         options.set_user_agent(self.user_agent)
 
+        # Linux 稳定性参数
+        if os.name != 'nt':
+            options.set_argument("--disable-gpu")
+            options.set_argument("--disable-software-rasterizer")
+            
+            # 关键：检查是否在 Docker/无显示器环境
+            # 如果没有 $DISPLAY 变量且没有设为无头，则强制开启无头模式
+            if not os.environ.get('DISPLAY') and not self.headless:
+                self._log("warning", "⚠️ 检测到无图形界面环境 (Docker/Linux)，强制开启无头模式以防止启动失败")
+                self.headless = True
+
         # 语言设置（确保使用中文界面）
         options.set_argument("--lang=zh-CN")
         options.set_pref("intl.accept_languages", "zh-CN,zh")
@@ -115,7 +126,6 @@ class GeminiAutomation:
         if self.headless:
             # 使用新版无头模式，更接近真实浏览器
             options.set_argument("--headless=new")
-            options.set_argument("--disable-gpu")
             options.set_argument("--no-first-run")
             options.set_argument("--disable-extensions")
             # 反检测参数
