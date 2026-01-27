@@ -265,12 +265,27 @@ class GeminiAutomation:
             self._log("error", "❌ 验证码输入框已失效")
             return {"success": False, "error": "code input expired"}
 
-        self._log("info", "⌨️ 正在输入验证码并通过回车提交...")
+        self._log("info", "⌨️ 正在输入验证码...")
         if not self._simulate_human_input(code_input, code):
             self._log("warning", "⚠️ 模拟输入失败，降级为直接输入")
-            code_input.input(f"{code}\n", clear=True)
-        else:
-            code_input.input("\n")
+            code_input.input(code, clear=True)
+        
+        time.sleep(1)  # 重要：等待 Google 脚本识别输入内容
+        
+        self._log("info", "⏎ 尝试按回车键提交...")
+        code_input.input("\n")
+        
+        # 兜底：如果几秒后 URL 没变，尝试寻找并点击物理按钮
+        time.sleep(2)
+        if "verify-oob-code" in page.url:
+            self._log("info", "🖱️ URL 未跳转，尝试寻找物理验证按钮进行点击...")
+            verify_btn = page.ele("css:button[jsname='XooR8e']", timeout=3) or self._find_verify_button(page)
+            if verify_btn:
+                try:
+                    verify_btn.click()
+                    self._log("info", "✅ 已点击物理验证按钮")
+                except Exception:
+                    pass
 
         # Step 7: 等待页面自动重定向
         self._log("info", "⏳ 等待验证后自动跳转...")
