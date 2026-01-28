@@ -11,7 +11,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # Stage 2: 最终运行时镜像
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -20,7 +20,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # 安装 Python 依赖和浏览器依赖（合并为单一 RUN 指令以减少层数）
 COPY requirements.txt .
-RUN apt-get update && \
+# 换源到阿里云 (Debian 12 bookworm)
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
     gcc \
     curl \
