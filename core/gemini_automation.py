@@ -112,10 +112,9 @@ class GeminiAutomation:
             
             # 如果检测到是在 Linux 环境但没有设置 DISPLAY，尝试默认使用虚拟显示器 :99（如果安装了 Xvfb）
             if not os.environ.get('DISPLAY'):
-                # 注意：这里不再强制 headless=True，而是依赖 entrypoint.sh 设置的 :99
-                # 只有当确实没有任何显示环境且依然要求 headed 时，才进行警告
-                if not self.headless:
-                    self._log("info", "💡 当前为 Linux 环境，将尝试使用系统的显示接口启动 (若在 Docker 中运行请确保 Xvfb 已启动)")
+                # 强制设置 Python 进程的环境变量，确保 DrissionPage/Chromium 子进程能读取到
+                os.environ['DISPLAY'] = ':99'
+                self._log("info", "💡 未检测到 DISPLAY 变量，已强制设置为 :99 (Xvfb)")
 
         # 语言设置（确保使用中文界面）
         options.set_argument("--lang=zh-CN")
