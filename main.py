@@ -1997,8 +1997,15 @@ async def chat_impl(
 
     # 4. 准备文本内容
     if is_new_conversation:
-        # 新对话只发送最后一条
-        text_to_send = last_text
+        # 即使是新会话，如果请求包含历史消息（说明是上下文重置或指纹漂移），
+        # 我们必须发送完整的上下文，以便 Google 能够"追上"之前的对话状态。
+        if len(req.messages) > 1:
+            logger.info(f"[CHAT] [req_{request_id}] 检测到新会话但包含历史消息，正在恢复上下文...")
+            text_to_send = build_full_context_text(req.messages)
+        else:
+            text_to_send = last_text
+        
+        # 标记为重试模式（意为：我们发送的是全量上下文，而非增量）
         is_retry_mode = True
     else:
         # 继续对话只发送当前消息
