@@ -49,6 +49,10 @@ export interface AccountConfigItem {
   mail_client_id?: string
   mail_refresh_token?: string
   mail_tenant?: string
+  mail_base_url?: string
+  mail_jwt_token?: string
+  mail_verify_ssl?: boolean
+  mail_domain?: string
 }
 
 export interface AccountsConfigResponse {
@@ -241,6 +245,7 @@ export type AutomationStatus = 'pending' | 'running' | 'success' | 'failed' | 'c
 export interface RegisterTask {
   id: string
   count: number
+  mail_provider?: string
   domain?: string | null
   status: AutomationStatus
   progress: number

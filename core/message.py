@@ -152,3 +152,43 @@ def build_full_context_text(messages: List['Message']) -> str:
 
         prompt += f"{role}: {content_str}\n\n"
     return prompt
+
+
+def strip_to_last_user_message(messages: list, is_first_message: bool = False) -> list:
+    """
+    消息瘦身：智能裁剪消息列表
+    
+    Args:
+        messages: 原始消息列表
+        is_first_message: 是否是该会话的首次消息
+        
+    Returns:
+        裁剪后的消息列表
+        
+    策略：
+    - 首次消息：保留 system 提示词（如果有）+ 最后一条 user 消息
+    - 后续消息：只保留最后一条 user 消息
+    """
+    if not messages:
+        return messages
+    
+    # 找到最后一条 user 消息
+    last_user_msg = None
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            last_user_msg = msg
+            break
+    
+    # 如果没有 user 消息，返回最后一条
+    if not last_user_msg:
+        return [messages[-1]]
+    
+    # 如果是首次消息，检查是否有 system 提示词
+    if is_first_message:
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+        if system_msgs:
+            # 返回 system 提示词 + 最后一条 user 消息
+            return system_msgs + [last_user_msg]
+    
+    # 后续消息或无 system 提示词：只返回最后一条 user 消息
+    return [last_user_msg]

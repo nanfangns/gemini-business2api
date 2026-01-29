@@ -13,6 +13,8 @@ def create_temp_mail_client(
     *,
     domain: Optional[str] = None,
     proxy: Optional[str] = None,
+    no_proxy: Optional[str] = None,
+    direct_fallback: bool = False,
     log_cb: Optional[Callable[[str, str], None]] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -27,7 +29,10 @@ def create_temp_mail_client(
     provider = (provider or "duckmail").lower()
     if proxy is None:
         proxy = config.basic.proxy_for_auth if config.basic.mail_proxy_enabled else ""
-    proxy, no_proxy = parse_proxy_setting(proxy if config.basic.mail_proxy_enabled else "")
+    
+    # 解析代理设置（如果没有传入 no_proxy，则从配置解析）
+    if no_proxy is None:
+        proxy, no_proxy = parse_proxy_setting(proxy if config.basic.mail_proxy_enabled else "")
 
     if provider == "moemail":
         effective_base_url = base_url or config.basic.moemail_base_url
@@ -72,6 +77,8 @@ def create_temp_mail_client(
     return DuckMailClient(
         base_url=effective_base_url,
         proxy=proxy,
+        no_proxy=no_proxy or "",
+        direct_fallback=direct_fallback,
         verify_ssl=verify_ssl if verify_ssl is not None else config.basic.duckmail_verify_ssl,
         api_key=api_key or config.basic.duckmail_api_key,
         log_callback=log_cb,

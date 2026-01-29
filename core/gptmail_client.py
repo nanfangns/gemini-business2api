@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import requests
+from core.mail_utils import extract_verification_code
 from core.proxy_utils import request_with_proxy_fallback
 
 

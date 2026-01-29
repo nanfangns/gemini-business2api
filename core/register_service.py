@@ -79,8 +79,9 @@ class RegisterService(BaseTaskService[RegisterTask]):
             if not domain_value:
                 domain_value = (config.basic.register_domain or "").strip() or None
 
-            mail_provider_value = (mail_provider or "").strip().lower() or "duckmail"
-            mail_provider_value = (mail_provider or "").strip().lower() or "duckmail"
+            mail_provider_value = (mail_provider or "").strip().lower()
+            if not mail_provider_value:
+                mail_provider_value = (config.basic.temp_mail_provider or "duckmail").lower()
             
             # 使用上游的参数校验逻辑，但保留我们的任务结构
             register_count = count or config.basic.register_default_count
@@ -93,8 +94,8 @@ class RegisterService(BaseTaskService[RegisterTask]):
                 domain=domain_value
             )
             self._tasks[task.id] = task
-            # 将 domain 记录在日志里，便于排查
-            self._append_log(task, "info", f"register task queued (count={register_count}, domain={domain_value or 'default'})")
+            # 将 domain 和 mail_provider 记录在日志里，便于排查
+            self._append_log(task, "info", f"register task queued (count={register_count}, domain={domain_value or 'default'}, provider={mail_provider_value})")
             await self._enqueue_task(task)
             self._current_task_id = task.id
             return task

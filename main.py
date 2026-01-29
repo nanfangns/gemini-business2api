@@ -47,7 +47,12 @@ from core.session_auth import is_logged_in, login_user, logout_user, require_log
 from core.message import (
     get_conversation_key,
     parse_last_message,
-    build_full_context_text
+    build_full_context_text,
+    strip_to_last_user_message
+)
+from core.session_binding import (
+    generate_chat_id,
+    get_session_binding_manager
 )
 from core.google_api import (
     get_common_headers,
@@ -748,6 +753,15 @@ async def startup_event():
             logger.error(f"[SYSTEM] 启动登录服务失败: {e}")
     else:
         logger.info("[SYSTEM] 自动登录刷新未启用或依赖不可用")
+
+    # 启动会话绑定管理器（从数据库加载绑定关系，启动持久化任务）
+    try:
+        binding_mgr = get_session_binding_manager()
+        await binding_mgr.load_from_db()
+        asyncio.create_task(binding_mgr.start_persist_task())
+        logger.info("[SYSTEM] 会话绑定管理器已启动（持久化间隔: 60秒）")
+    except Exception as e:
+        logger.error(f"[SYSTEM] 启动会话绑定管理器失败: {e}")
 
 # ---------- 日志脱敏函数 ----------
 def get_sanitized_logs(limit: int = 100) -> list:
@@ -1725,7 +1739,13 @@ async def chat_impl(
 
     start_ts = time.time()
     request.state.first_response_time = None
-    message_count = len(req.messages)
+    
+    # 记录原始消息数量（用于统计）
+    original_message_count = len(req.messages)
+    message_count = original_message_count
+    
+    # 保存原始消息用于后续瘦身处理
+    original_messages_dict = [m.model_dump() for m in req.messages]
 
     monitor_recorded = False
 
@@ -1809,7 +1829,16 @@ async def chat_impl(
     # 保存模型信息到 request.state（用于 Uptime 追踪）
     request.state.model = req.model
 
-    # 3. 生成会话指纹，获取Session锁（防止同一对话的并发请求冲突）
+    # 3. 生成 ChatID（基于首条消息+IP，稳定不变）
+    chat_id_for_binding = generate_chat_id([m.model_dump() for m in req.messages], client_ip)
+    
+    # 获取会话绑定管理器
+    binding_mgr = get_session_binding_manager()
+    
+    # 检查是否已有绑定账号
+    bound_account_id = await binding_mgr.get_binding(chat_id_for_binding)
+    
+    # 生成 conv_key 用于 session 锁（仍需防止并发冲突）
     conv_key = get_conversation_key([m.model_dump() for m in req.messages], client_ip)
     session_lock = await multi_account_mgr.acquire_session_lock(conv_key)
 
@@ -1824,7 +1853,26 @@ async def chat_impl(
             google_session = cached_session["session_id"]
             is_new_conversation = False
             logger.info(f"[CHAT] [{account_id}] [req_{request_id}] 继续会话: {google_session[-12:]}")
-        else:
+        elif bound_account_id:
+            # 有持久化绑定但无缓存Session：使用绑定账号创建新Session
+            try:
+                account_manager = await multi_account_mgr.get_account(bound_account_id, request_id)
+                google_session = await create_google_session(account_manager, http_client, USER_AGENT, request_id)
+                await multi_account_mgr.set_session_cache(
+                    conv_key,
+                    account_manager.config.account_id,
+                    google_session
+                )
+                is_new_conversation = True
+                logger.info(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] 绑定账号重建Session")
+                uptime_tracker.record_request("account_pool", True)
+            except Exception as e:
+                # 绑定账号不可用，解绑并漂移到新账号
+                logger.warning(f"[CHAT] [req_{request_id}] 绑定账号 {bound_account_id} 不可用，自动漂移: {e}")
+                await binding_mgr.remove_binding(chat_id_for_binding)
+                bound_account_id = None  # 触发下面的新账号选择逻辑
+        
+        if not cached_session and not bound_account_id:
             # 新对话：轮询选择可用账户，失败时尝试其他账户
             max_account_tries = min(MAX_NEW_SESSION_TRIES, len(multi_account_mgr.accounts))
             last_error = None
@@ -1839,6 +1887,8 @@ async def chat_impl(
                         account_manager.config.account_id,
                         google_session
                     )
+                    # 持久化绑定关系
+                    await binding_mgr.set_binding(chat_id_for_binding, account_manager.config.account_id)
                     is_new_conversation = True
                     logger.info(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] 新会话创建并绑定账户")
                     # 记录账号池状态（账户可用）
@@ -1859,6 +1909,36 @@ async def chat_impl(
                         await finalize_result(status, 503, f"All accounts unavailable: {str(last_error)[:100]}")
                         raise HTTPException(503, f"All accounts unavailable: {str(last_error)[:100]}")
                     # 继续尝试下一个账户
+                    # 记录账号池状态（账户可用）
+                    uptime_tracker.record_request("account_pool", True)
+                    break
+                except Exception as e:
+                    last_error = e
+                    error_type = type(e).__name__
+                    # 安全获取账户ID
+                    account_id = account_manager.config.account_id if 'account_manager' in locals() and account_manager else 'unknown'
+                    logger.error(f"[CHAT] [req_{request_id}] 账户 {account_id} 创建会话失败 (尝试 {attempt + 1}/{max_account_tries}) - {error_type}: {str(e)}")
+                    # 记录账号池状态（单个账户失败）
+                    status_code = e.status_code if isinstance(e, HTTPException) else None
+                    uptime_tracker.record_request("account_pool", False, status_code=status_code)
+                    if attempt == max_account_tries - 1:
+                        logger.error(f"[CHAT] [req_{request_id}] 所有账户均不可用")
+                        status = classify_error_status(503, last_error if isinstance(last_error, Exception) else Exception("account_pool_unavailable"))
+                        await finalize_result(status, 503, f"All accounts unavailable: {str(last_error)[:100]}")
+                        raise HTTPException(503, f"All accounts unavailable: {str(last_error)[:100]}")
+                    # 继续尝试下一个账户
+
+    # 消息瘦身：根据是否首次对话决定是否保留 system 提示词
+    stripped_messages_dict = strip_to_last_user_message(original_messages_dict, is_first_message=is_new_conversation)
+    
+    # 重建消息对象（用瘦身后的消息替换原消息）
+    if stripped_messages_dict and req.messages:
+        req.messages = [type(req.messages[0])(**m) for m in stripped_messages_dict]
+        if is_new_conversation:
+            system_count = sum(1 for m in stripped_messages_dict if m.get("role") == "system")
+            logger.info(f"[CHAT] [req_{request_id}] 消息瘦身: {original_message_count}条 → {len(stripped_messages_dict)}条 (含{system_count}条system提示词)")
+        else:
+            logger.info(f"[CHAT] [req_{request_id}] 消息瘦身: {original_message_count}条 → {len(stripped_messages_dict)}条")
 
     # 提取用户消息内容用于日志
     if req.messages:

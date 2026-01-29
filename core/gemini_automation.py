@@ -62,6 +62,17 @@ class GeminiAutomation:
             except Exception:
                 pass
 
+    def _cleanup_user_data(self, user_data_dir: str) -> None:
+        """清理临时用户数据目录"""
+        if not user_data_dir:
+            return
+        try:
+            import shutil
+            shutil.rmtree(user_data_dir, ignore_errors=True)
+            self._log("info", f"🧹 已清理临时目录: {user_data_dir}")
+        except Exception as e:
+            self._log("warning", f"⚠️ 清理临时目录失败: {e}")
+
     def login_and_extract(self, email: str, mail_client) -> dict:
         """执行登录并提取配置"""
         page = None
@@ -89,6 +100,9 @@ class GeminiAutomation:
 
     def _create_page(self) -> ChromiumPage:
         """创建浏览器页面"""
+        import tempfile
+        import shutil
+        
         options = ChromiumOptions()
 
         # 自动检测 Chromium 浏览器路径（Linux/Docker 环境）
@@ -97,6 +111,11 @@ class GeminiAutomation:
             options.set_browser_path(chromium_path)
             self._log("info", f"using browser: {chromium_path}")
 
+        # 创建唯一的临时用户数据目录，避免与其他浏览器实例冲突
+        user_data_dir = tempfile.mkdtemp(prefix="gemini_chrome_")
+        options.set_user_data_path(user_data_dir)
+        self._log("info", f"using temp user data dir: {user_data_dir}")
+
         options.set_argument("--incognito")
         options.set_argument("--no-sandbox")
         options.set_argument("--disable-dev-shm-usage")
@@ -104,6 +123,13 @@ class GeminiAutomation:
         options.set_argument("--disable-blink-features=AutomationControlled")
         options.set_argument("--window-size=1280,800")
         options.set_user_agent(self.user_agent)
+        
+        # 禁用不必要的功能，提高稳定性
+        options.set_argument("--disable-extensions")
+        options.set_argument("--disable-background-networking")
+        options.set_argument("--disable-default-apps")
+        options.set_argument("--disable-sync")
+        options.set_argument("--no-first-run")
 
         # Linux 稳定性参数
         if os.name != 'nt':
@@ -126,15 +152,25 @@ class GeminiAutomation:
         if self.headless:
             # 使用新版无头模式，更接近真实浏览器
             options.set_argument("--headless=new")
-            options.set_argument("--no-first-run")
-            options.set_argument("--disable-extensions")
             # 反检测参数
             options.set_argument("--disable-infobars")
             options.set_argument("--enable-features=NetworkService,NetworkServiceInProcess")
 
+        # 使用自动端口避免冲突
         options.auto_port()
-        page = ChromiumPage(options)
-        page.set.timeouts(self.timeout)
+        
+        try:
+            page = ChromiumPage(options)
+            page.user_data_dir = user_data_dir  # 保存引用以便清理
+            page.set.timeouts(self.timeout)
+        except Exception as e:
+            # 如果创建失败，清理临时目录
+            self._log("error", f"❌ 浏览器启动失败: {e}")
+            try:
+                shutil.rmtree(user_data_dir, ignore_errors=True)
+            except Exception:
+                pass
+            raise
 
         # 反检测：注入脚本隐藏自动化特征
         if self.headless:

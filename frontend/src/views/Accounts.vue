@@ -497,7 +497,7 @@
           <div>
             <p class="text-sm font-medium text-foreground">添加账户</p>
             <p class="mt-1 text-xs text-muted-foreground">
-              {{ addMode === 'register' ? '创建 DuckMail 账号并自动注册' : '批量导入账户配置' }}
+              {{ addMode === 'register' ? '自动创建账号并执行注册任务' : '批量导入账户配置' }}
             </p>
           </div>
           <button
@@ -530,16 +530,41 @@
           </div>
 
           <div v-if="addMode === 'register'" class="space-y-4">
-            <label class="block text-xs text-muted-foreground">注册数量</label>
-            <input
-              v-model.number="registerCount"
-              type="number"
-              min="1"
-              class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
-            />
+            <div class="grid grid-cols-2 gap-4">
+              <div class="space-y-2">
+                <label class="block text-xs text-muted-foreground">注册数量</label>
+                <input
+                  v-model.number="registerCount"
+                  type="number"
+                  min="1"
+                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                />
+              </div>
+              <div class="space-y-2">
+                <label class="block text-xs text-muted-foreground">邮箱提供商</label>
+                <SelectMenu
+                  v-model="registerMailProvider"
+                  :options="(mailProviderOptions as any)"
+                  class="!w-full"
+                />
+              </div>
+            </div>
+
+            <div v-if="registerMailProvider === 'duckmail'" class="space-y-2">
+              <label class="block text-xs text-muted-foreground">注册域名 (仅限 DuckMail)</label>
+              <input
+                v-model="registerDomain"
+                type="text"
+                placeholder="留空使用默认设置"
+                class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+              />
+            </div>
+
             <div class="rounded-2xl border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              <p>默认域名（可在配置面板修改，推荐使用）</p>
-              <p class="mt-1">注册失败建议关闭无头浏览器再试</p>
+              <p v-if="registerMailProvider === 'duckmail'">域名可在配置面板预设，推荐使用以提高成功率。</p>
+              <p v-else-if="registerMailProvider === 'moemail'">Moemail 自动获取临时邮箱并完成注册。</p>
+              <p v-else>使用所选服务商自动注册 Google 账户。</p>
+              <p class="mt-1">注册失败建议尝试更换提供商或关闭无头模式。</p>
             </div>
           </div>
 
@@ -971,6 +996,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAccountsStore } from '@/stores/accounts'
+import { useSettingsStore } from '@/stores/settings'
 import SelectMenu from '@/components/ui/SelectMenu.vue'
 import Checkbox from '@/components/ui/Checkbox.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
@@ -979,10 +1005,13 @@ import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import { useToast } from '@/composables/useToast'
 import HelpTip from '@/components/ui/HelpTip.vue'
 import { accountsApi } from '@/api'
+import { defaultMailProvider, mailProviderOptions } from '@/constants/mailProviders'
 import type { AdminAccount, AccountConfigItem, RegisterTask, LoginTask } from '@/types/api'
 
 const accountsStore = useAccountsStore()
 const { accounts, isLoading } = storeToRefs(accountsStore)
+const settingsStore = useSettingsStore()
+const { settings } = storeToRefs(settingsStore)
 const confirmDialog = useConfirmDialog()
 const toast = useToast()
 
@@ -1000,6 +1029,8 @@ const configJson = ref('')
 const configMasked = ref(false)
 const configData = ref<AccountConfigItem[]>([])
 const registerCount = ref(1)
+const registerMailProvider = ref(defaultMailProvider)
+const registerDomain = ref('')
 const isRegisterOpen = ref(false)
 const addMode = ref<'register' | 'import'>('register')
 const importText = ref('')
@@ -1274,6 +1305,8 @@ const openRegisterModal = () => {
   isImporting.value = false
   importFileName.value = ''
   registerAgreed.value = false
+  registerMailProvider.value = settings.value?.basic?.temp_mail_provider || defaultMailProvider
+  registerDomain.value = settings.value?.basic?.register_domain || ''
 }
 
 const openExportModal = (format: 'json' | 'txt' = 'json') => {
@@ -2386,7 +2419,11 @@ const handleRegister = async () => {
     const count = Number.isFinite(registerCount.value) && registerCount.value > 0
       ? registerCount.value
       : undefined
-    const task = await accountsApi.startRegister(count)
+    const task = await accountsApi.startRegister(
+      count, 
+      registerDomain.value || undefined, 
+      registerMailProvider.value
+    )
     syncRegisterTask(task)
     startRegisterPolling(task.id)
     isRegisterOpen.value = false
