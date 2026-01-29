@@ -18,9 +18,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai
 
-# 安装 Python 依赖和浏览器依赖（合并为单一 RUN 指令以减少层数）
-COPY requirements.txt .
-# 换源到阿里云 (Debian 12 bookworm)
+# 安装系统依赖（这些很少变动，放在前面以利用缓存）
 RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -35,10 +33,16 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
     libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 \
     libcairo2 fonts-liberation fonts-noto-cjk && \
     ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
-    pip install --no-cache-dir -r requirements.txt && \
-    apt-get purge -y gcc && \
+    rm -rf /var/lib/apt/lists/*
+
+# 安装 Python 依赖（使用清华源，并单独一层，避免 requirements 变化导致系统依赖重装）
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 清理不必要的构建工具
+RUN apt-get purge -y gcc && \
     apt-get autoremove -y && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    rm -rf /tmp/* /var/tmp/*
 
 # 复制后端代码
 COPY main.py .

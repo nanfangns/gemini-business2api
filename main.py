@@ -151,8 +151,7 @@ async def load_stats():
     return data
 
 async def save_stats(stats):
-    """保存统计数据（异步，避免阻塞事件循环）"""
-    # 将 deque 转换为 list 以便 JSON 序列化
+    """保存统计数据（已优化：内部使用 storage 缓冲区，非阻塞）"""
     stats_to_save = stats.copy()
     if isinstance(stats_to_save.get("request_timestamps"), deque):
         stats_to_save["request_timestamps"] = list(stats_to_save["request_timestamps"])
@@ -161,18 +160,17 @@ async def save_stats(stats):
     if isinstance(stats_to_save.get("rate_limit_timestamps"), deque):
         stats_to_save["rate_limit_timestamps"] = list(stats_to_save["rate_limit_timestamps"])
 
+    # 1. 尝试保存到数据库（通过 storage 的后台缓冲区，极快）
     if storage.is_database_enabled():
+        storage.save_stats_sync(stats_to_save)
+    
+    # 2. 定期保存到本地文件作为备份 (每 50 次请求保存一次文件，减少磁盘写入)
+    if stats_to_save.get("total_requests", 0) % 50 == 0:
         try:
-            saved = await asyncio.to_thread(storage.save_stats_sync, stats_to_save)
-            if saved:
-                return
+            async with aiofiles.open(STATS_FILE, 'w', encoding='utf-8') as f:
+                await f.write(json.dumps(stats_to_save, ensure_ascii=False, indent=2))
         except Exception as e:
-            logger.error(f"[STATS] 数据库保存失败: {str(e)[:50]}")
-    try:
-        async with aiofiles.open(STATS_FILE, 'w', encoding='utf-8') as f:
-            await f.write(json.dumps(stats_to_save, ensure_ascii=False, indent=2))
-    except Exception as e:
-        logger.error(f"[STATS] 保存统计数据失败: {str(e)[:50]}")
+            logger.error(f"[STATS] 保存本地备份失败: {str(e)[:50]}")
 
 # 初始化统计数据（需要在启动时异步加载）
 global_stats = {
@@ -366,7 +364,7 @@ MODEL_MAPPING = {
 def _build_http_client(specific_proxy=None):
     client_kwargs = {
         "verify": False,
-        "http2": False,
+        "http2": True,  # 启用 HTTP/2 提升并发性能
         "timeout": httpx.Timeout(TIMEOUT_SECONDS, connect=60.0),
         "limits": httpx.Limits(
             max_keepalive_connections=100,
@@ -744,6 +742,11 @@ async def startup_event():
         logger.info(f"[SYSTEM] 自动刷新账号任务已启动（间隔: {AUTO_REFRESH_ACCOUNTS_SECONDS}秒）")
     elif storage.is_database_enabled():
         logger.info("[SYSTEM] 自动刷新账号功能已禁用（配置为0）")
+
+    # 启动数据库统计数据后台持久化任务
+    if storage.is_database_enabled():
+        asyncio.create_task(storage.start_stats_persistence_task(interval=60))
+        logger.info("[SYSTEM] 数据库统计后台持久化任务已启动 (间隔: 60s)")
 
     # 启动自动登录刷新轮询
     if login_service:

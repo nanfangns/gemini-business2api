@@ -235,6 +235,9 @@ async def save_settings(settings: dict) -> bool:
 
 # ==================== Stats storage ====================
 
+_stats_buffer = None
+_stats_buffer_lock = threading.Lock()
+
 async def load_stats() -> Optional[dict]:
     if not is_database_enabled():
         return None
@@ -246,6 +249,7 @@ async def load_stats() -> Optional[dict]:
 
 
 async def save_stats(stats: dict) -> bool:
+    """Async version of stats saving."""
     if not is_database_enabled():
         return False
     try:
@@ -254,6 +258,46 @@ async def save_stats(stats: dict) -> bool:
     except Exception as e:
         logger.error(f"[STORAGE] Stats write failed: {e}")
     return False
+
+
+def save_stats_sync(stats: dict) -> bool:
+    """
+    Optimized sync wrapper for stats saving.
+    Now uses a memory buffer to avoid blocking the caller.
+    The actual persistence happens in a background task.
+    """
+    global _stats_buffer
+    with _stats_buffer_lock:
+        _stats_buffer = stats
+    return True
+
+
+async def start_stats_persistence_task(interval: int = 30):
+    """
+    Background task to persist stats from buffer to database.
+    This prevents every request from triggering a database write.
+    """
+    global _stats_buffer
+    logger.info(f"[STORAGE] Stats persistence task started (interval: {interval}s)")
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            current_stats = None
+            with _stats_buffer_lock:
+                if _stats_buffer is not None:
+                    current_stats = _stats_buffer
+                    _stats_buffer = None
+            
+            if current_stats:
+                await save_stats(current_stats)
+                logger.debug("[STORAGE] Background stats persistence completed")
+        except asyncio.CancelledError:
+            # Save one last time before exiting
+            if _stats_buffer:
+                await save_stats(_stats_buffer)
+            break
+        except Exception as e:
+            logger.error(f"[STORAGE] Stats persistence task error: {e}")
 
 
 def load_settings_sync() -> Optional[dict]:
@@ -268,5 +312,12 @@ def load_stats_sync() -> Optional[dict]:
     return _run_in_db_loop(load_stats())
 
 
-def save_stats_sync(stats: dict) -> bool:
-    return _run_in_db_loop(save_stats(stats))
+def db_set_sync(key: str, value: dict) -> None:
+    """Sync wrapper for db_set."""
+    return _run_in_db_loop(db_set(key, value))
+
+
+def db_get_sync(key: str) -> Optional[dict]:
+    """Sync wrapper for db_get."""
+    return _run_in_db_loop(db_get(key))
+
