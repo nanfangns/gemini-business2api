@@ -12,26 +12,69 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 
-def generate_chat_id(messages: list, client_ip: str = "") -> str:
+def extract_chat_id(
+    messages: list,
+    client_ip: str = "",
+    headers: dict = None,
+    body: dict = None
+) -> tuple[str, str]:
     """
-    生成通用 ChatID（通杀方案）
+    提取或生成 ChatID（多源优先级检测）
     
-    策略：基于【第一条 user 消息内容 + 客户端IP】生成稳定指纹
-    - 同一用户的同一个对话，第一条 user 消息不变 → ChatID 不变
-    - 不同用户即使发相同消息，IP 不同 → ChatID 不同
-    
-    注意：使用第一条 user 消息而非 messages[0]，因为消息列表可能包含
-    不同数量的 system/assistant 消息，但第一条 user 消息是稳定的。
+    优先级：
+    1. 请求头 X-Conversation-Id / X-Chat-Id
+    2. 请求体 conversation_id / chat_id / metadata.conversation_id
+    3. 消息指纹（基于第一条 user 消息 + IP）
     
     Args:
         messages: 消息列表
         client_ip: 客户端 IP 地址
+        headers: 请求头字典
+        body: 请求体字典
     
     Returns:
-        ChatID 字符串（MD5 哈希）
+        (chat_id, source) 元组，source 表示 ID 来源
+    """
+    headers = headers or {}
+    body = body or {}
+    
+    # 1. 优先检查请求头
+    header_keys = ['x-conversation-id', 'x-chat-id', 'conversation-id', 'chat-id']
+    for key in header_keys:
+        value = headers.get(key, "").strip()
+        if value:
+            logger.info(f"[SESSION-BIND] ChatID来源: 请求头 {key}={value[:16]}...")
+            return value, f"header:{key}"
+    
+    # 2. 检查请求体字段
+    body_keys = ['conversation_id', 'chat_id', 'session_id', 'thread_id']
+    for key in body_keys:
+        value = body.get(key, "")
+        if isinstance(value, str) and value.strip():
+            logger.info(f"[SESSION-BIND] ChatID来源: 请求体 {key}={value[:16]}...")
+            return value.strip(), f"body:{key}"
+    
+    # 检查 metadata 中的 ID
+    metadata = body.get('metadata', {})
+    if isinstance(metadata, dict):
+        for key in body_keys:
+            value = metadata.get(key, "")
+            if isinstance(value, str) and value.strip():
+                logger.info(f"[SESSION-BIND] ChatID来源: metadata.{key}={value[:16]}...")
+                return value.strip(), f"metadata:{key}"
+    
+    # 3. 回退到消息指纹
+    chat_id = generate_chat_id_from_messages(messages, client_ip)
+    return chat_id, "fingerprint"
+
+
+def generate_chat_id_from_messages(messages: list, client_ip: str = "") -> str:
+    """
+    基于消息生成 ChatID（仅作为回退方案）
+    
+    策略：基于【第一条 user 消息内容 + 客户端IP】生成稳定指纹
     """
     if not messages:
-        # 空消息时用 IP + 时间戳（每次都是新对话）
         chat_id = hashlib.md5(f"{client_ip}:{time.time()}".encode()).hexdigest()
         logger.warning(f"[SESSION-BIND] 空消息列表，生成随机 ChatID: {chat_id[:8]}...")
         return chat_id
@@ -55,7 +98,6 @@ def generate_chat_id(messages: list, client_ip: str = "") -> str:
     
     # 处理多模态内容
     if isinstance(content, list):
-        # 只提取文本部分
         text_parts = []
         for part in content:
             if isinstance(part, dict) and part.get("type") == "text":
@@ -63,16 +105,21 @@ def generate_chat_id(messages: list, client_ip: str = "") -> str:
         content = "".join(text_parts)
     
     # 标准化处理
-    content = str(content).strip()[:500]  # 限制长度，避免超长消息
+    content = str(content).strip()[:500]
     
     # 生成指纹：IP + 角色 + 内容
     fingerprint = f"{client_ip}|{role}|{content}"
     chat_id = hashlib.md5(fingerprint.encode()).hexdigest()
     
-    # 调试日志：显示生成的 ChatID 和关键输入
-    logger.info(f"[SESSION-BIND] ChatID生成: IP={client_ip}, role={role}, content={content[:50]}... -> {chat_id[:8]}...")
+    logger.info(f"[SESSION-BIND] ChatID生成(指纹): IP={client_ip}, content={content[:40]}... -> {chat_id[:8]}...")
     
     return chat_id
+
+
+# 为了向后兼容，保留旧函数名
+def generate_chat_id(messages: list, client_ip: str = "") -> str:
+    """向后兼容函数，请使用 extract_chat_id"""
+    return generate_chat_id_from_messages(messages, client_ip)
 
 
 class SessionBindingManager:

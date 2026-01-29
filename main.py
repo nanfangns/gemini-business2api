@@ -52,6 +52,7 @@ from core.message import (
 )
 from core.session_binding import (
     generate_chat_id,
+    extract_chat_id,
     get_session_binding_manager
 )
 from core.google_api import (
@@ -1829,8 +1830,25 @@ async def chat_impl(
     # 保存模型信息到 request.state（用于 Uptime 追踪）
     request.state.model = req.model
 
-    # 3. 生成 ChatID（基于首条消息+IP，稳定不变）
-    chat_id_for_binding = generate_chat_id([m.model_dump() for m in req.messages], client_ip)
+    # 3. 提取 ChatID（多源优先级检测：请求头 → 请求体 → 消息指纹）
+    # 构建请求头字典（小写化）
+    headers_dict = {k.lower(): v for k, v in request.headers.items()}
+    
+    # 构建请求体字典（包含可能的额外字段）
+    body_dict = {}
+    try:
+        # 尝试获取原始请求体中的额外字段
+        body_dict = dict(req)  # 从 Pydantic model 转换
+    except Exception:
+        pass
+    
+    chat_id_for_binding, chat_id_source = extract_chat_id(
+        [m.model_dump() for m in req.messages],
+        client_ip,
+        headers=headers_dict,
+        body=body_dict
+    )
+    logger.info(f"[CHAT] [req_{request_id}] ChatID: {chat_id_for_binding[:8]}... (来源: {chat_id_source})")
     
     # 获取会话绑定管理器
     binding_mgr = get_session_binding_manager()
