@@ -16,9 +16,12 @@ def generate_chat_id(messages: list, client_ip: str = "") -> str:
     """
     生成通用 ChatID（通杀方案）
     
-    策略：基于【首条消息内容 + 客户端IP】生成稳定指纹
-    - 同一用户的同一个对话，首条消息不变 → ChatID 不变
+    策略：基于【第一条 user 消息内容 + 客户端IP】生成稳定指纹
+    - 同一用户的同一个对话，第一条 user 消息不变 → ChatID 不变
     - 不同用户即使发相同消息，IP 不同 → ChatID 不同
+    
+    注意：使用第一条 user 消息而非 messages[0]，因为消息列表可能包含
+    不同数量的 system/assistant 消息，但第一条 user 消息是稳定的。
     
     Args:
         messages: 消息列表
@@ -29,12 +32,26 @@ def generate_chat_id(messages: list, client_ip: str = "") -> str:
     """
     if not messages:
         # 空消息时用 IP + 时间戳（每次都是新对话）
-        return hashlib.md5(f"{client_ip}:{time.time()}".encode()).hexdigest()
+        chat_id = hashlib.md5(f"{client_ip}:{time.time()}".encode()).hexdigest()
+        logger.warning(f"[SESSION-BIND] 空消息列表，生成随机 ChatID: {chat_id[:8]}...")
+        return chat_id
     
-    # 提取首条消息的角色和内容
-    first_msg = messages[0]
-    role = first_msg.get("role", "")
-    content = first_msg.get("content", "")
+    # 调试日志：显示收到的消息列表结构
+    msg_summary = [f"{m.get('role', '?')}:{str(m.get('content', ''))[:30]}" for m in messages[:5]]
+    logger.info(f"[SESSION-BIND] 消息列表({len(messages)}条): {msg_summary}")
+    
+    # 找第一条 user 消息（而非 messages[0]，避免 system prompt 干扰）
+    first_user_msg = None
+    for msg in messages:
+        if msg.get("role") == "user":
+            first_user_msg = msg
+            break
+    
+    # 如果没有 user 消息，回退到第一条消息
+    target_msg = first_user_msg if first_user_msg else messages[0]
+    
+    role = target_msg.get("role", "")
+    content = target_msg.get("content", "")
     
     # 处理多模态内容
     if isinstance(content, list):
@@ -50,7 +67,12 @@ def generate_chat_id(messages: list, client_ip: str = "") -> str:
     
     # 生成指纹：IP + 角色 + 内容
     fingerprint = f"{client_ip}|{role}|{content}"
-    return hashlib.md5(fingerprint.encode()).hexdigest()
+    chat_id = hashlib.md5(fingerprint.encode()).hexdigest()
+    
+    # 调试日志：显示生成的 ChatID 和关键输入
+    logger.info(f"[SESSION-BIND] ChatID生成: IP={client_ip}, role={role}, content={content[:50]}... -> {chat_id[:8]}...")
+    
+    return chat_id
 
 
 class SessionBindingManager:
