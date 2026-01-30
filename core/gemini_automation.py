@@ -150,11 +150,15 @@ class GeminiAutomation:
             options.set_argument(f"--proxy-server={self.proxy}")
 
         if self.headless:
-            # 使用新版无头模式，更接近真实浏览器
+        # 使用新版无头模式，更接近真实浏览器
             options.set_argument("--headless=new")
             # 反检测参数
             options.set_argument("--disable-infobars")
             options.set_argument("--enable-features=NetworkService,NetworkServiceInProcess")
+
+        # 关键修复：强制绑定到 IPv4 本地地址，防止 Docker 环境下绑定到 IPv6
+        options.set_argument("--remote-debugging-address=127.0.0.1")
+        options.set_argument("--remote-debugging-host=127.0.0.1")
 
         # 使用自动端口避免冲突
         options.auto_port()
