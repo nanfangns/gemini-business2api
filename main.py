@@ -39,6 +39,10 @@ VIDEO_DIR = os.path.join(DATA_DIR, "videos")
 os.makedirs(IMAGE_DIR, exist_ok=True)
 os.makedirs(VIDEO_DIR, exist_ok=True)
 
+# 媒体文件清理配置
+MEDIA_CLEANUP_INTERVAL_SECONDS = 1800  # 每30分钟清理一次
+MEDIA_MAX_AGE_SECONDS = 3600  # 文件最大保留1小时
+
 # 导入认证模块
 from core.auth import verify_api_key
 from core.session_auth import is_logged_in, login_user, logout_user, require_login, generate_session_secret
@@ -645,6 +649,47 @@ else:
 _last_known_accounts_version: float | None = None
 
 
+async def media_cleanup_task():
+    """后台任务：定期清理过期的图片和视频文件"""
+    while True:
+        try:
+            await asyncio.sleep(MEDIA_CLEANUP_INTERVAL_SECONDS)
+            
+            now = time.time()
+            deleted_count = 0
+            
+            # 清理图片目录
+            for filename in os.listdir(IMAGE_DIR):
+                filepath = os.path.join(IMAGE_DIR, filename)
+                if os.path.isfile(filepath):
+                    file_age = now - os.path.getmtime(filepath)
+                    if file_age > MEDIA_MAX_AGE_SECONDS:
+                        try:
+                            os.remove(filepath)
+                            deleted_count += 1
+                        except Exception:
+                            pass
+            
+            # 清理视频目录
+            for filename in os.listdir(VIDEO_DIR):
+                filepath = os.path.join(VIDEO_DIR, filename)
+                if os.path.isfile(filepath):
+                    file_age = now - os.path.getmtime(filepath)
+                    if file_age > MEDIA_MAX_AGE_SECONDS:
+                        try:
+                            os.remove(filepath)
+                            deleted_count += 1
+                        except Exception:
+                            pass
+            
+            if deleted_count > 0:
+                logger.info(f"[CLEANUP] 已清理 {deleted_count} 个过期媒体文件")
+                
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"[CLEANUP] 媒体清理任务出错: {type(e).__name__}: {str(e)[:50]}")
+
 async def auto_refresh_accounts_task():
     """后台任务：定期检查数据库中的账号变化，自动刷新"""
     global multi_account_mgr, _last_known_accounts_version
@@ -747,6 +792,10 @@ async def startup_event():
     if storage.is_database_enabled():
         asyncio.create_task(storage.start_stats_persistence_task(interval=60))
         logger.info("[SYSTEM] 数据库统计后台持久化任务已启动 (间隔: 60s)")
+
+    # 启动媒体文件定时清理任务
+    asyncio.create_task(media_cleanup_task())
+    logger.info(f"[SYSTEM] 媒体文件清理任务已启动（间隔: {MEDIA_CLEANUP_INTERVAL_SECONDS}秒，保留: {MEDIA_MAX_AGE_SECONDS}秒）")
 
     # 启动自动登录刷新轮询
     if login_service:
