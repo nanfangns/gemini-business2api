@@ -13,6 +13,7 @@ from core.mail_providers import create_temp_mail_client
 from core.gemini_automation import GeminiAutomation
 from core.gemini_automation_uc import GeminiAutomationUC
 from core.outbound_proxy import OutboundProxyConfig
+from core.proxy_utils import parse_proxy_setting
 
 logger = logging.getLogger("gemini.register")
 
@@ -181,14 +182,17 @@ class RegisterService(BaseTaskService[RegisterTask]):
         # 根据配置选择浏览器引擎
         browser_engine = (config.basic.browser_engine or "dp").lower()
         headless = config.basic.browser_headless
+        
+        # 使用配置的账户操作代理（用于访问 Gemini 网站）
+        browser_proxy, _ = parse_proxy_setting(config.basic.proxy_for_auth)
 
-        log_cb("info", f"🌐 步骤 2/3: 启动浏览器 (引擎={browser_engine}, 无头模式={headless})...")
+        log_cb("info", f"🌐 步骤 2/3: 启动浏览器 (引擎={browser_engine}, 无头模式={headless}, 代理={browser_proxy or '无'})...")
 
         if browser_engine == "dp":
             # DrissionPage 引擎：支持有头和无头模式
             automation = GeminiAutomation(
                 user_agent=self.user_agent,
-                proxy=client.proxy_url if hasattr(client, 'proxy_url') else "", # Use client proxy if available
+                proxy=browser_proxy,
                 headless=headless,
                 log_callback=log_cb,
             )
@@ -199,7 +203,7 @@ class RegisterService(BaseTaskService[RegisterTask]):
                 headless = False
              automation = GeminiAutomationUC(
                 user_agent=self.user_agent,
-                proxy=client.proxy_url if hasattr(client, 'proxy_url') else "",
+                proxy=browser_proxy,
                 headless=headless,
                 log_callback=log_cb,
             )

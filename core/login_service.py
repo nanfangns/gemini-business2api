@@ -240,14 +240,18 @@ class LoginService(BaseTaskService[LoginTask]):
         # 根据配置选择浏览器引擎
         browser_engine = (config.basic.browser_engine or "dp").lower()
         headless = config.basic.browser_headless
+        
+        # 优先使用账户级别代理，否则使用全局配置的账户操作代理
+        from core.proxy_utils import parse_proxy_setting
+        browser_proxy = proxy_url if proxy_url else parse_proxy_setting(config.basic.proxy_for_auth)[0]
 
-        log_cb("info", f"🌐 启动浏览器 (引擎={browser_engine}, 无头模式={headless})...")
+        log_cb("info", f"🌐 启动浏览器 (引擎={browser_engine}, 无头模式={headless}, 代理={browser_proxy or '无'})...")
 
         if browser_engine == "dp":
             # DrissionPage 引擎：支持有头和无头模式
             automation = GeminiAutomation(
                 user_agent=self.user_agent,
-                proxy=proxy_url,
+                proxy=browser_proxy,
                 headless=headless,
                 log_callback=log_cb,
             )
@@ -258,7 +262,7 @@ class LoginService(BaseTaskService[LoginTask]):
                 headless = False
             automation = GeminiAutomationUC(
                 user_agent=self.user_agent,
-                proxy=proxy_url,
+                proxy=browser_proxy,
                 headless=headless,
                 log_callback=log_cb,
             )

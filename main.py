@@ -1428,6 +1428,8 @@ async def admin_get_settings(request: Request):
             "api_key": config.basic.api_key,
             "base_url": config.basic.base_url,
             "proxy": config.basic.proxy,
+            "proxy_for_auth": config.basic.proxy_for_auth,
+            "proxy_for_chat": config.basic.proxy_for_chat,
             "duckmail_base_url": config.basic.duckmail_base_url,
             "duckmail_api_key": config.basic.duckmail_api_key,
             "duckmail_verify_ssl": config.basic.duckmail_verify_ssl,
@@ -1489,6 +1491,11 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
         basic = dict(new_settings.get("basic") or {})
         if "proxy" in basic:
             basic["proxy"] = normalize_proxy_url(str(basic.get("proxy") or ""))
+        
+        # 显式提取新代理字段，防止被重组字典时遗漏
+        basic["proxy_for_auth"] = str(basic.get("proxy_for_auth") or "").strip()
+        basic["proxy_for_chat"] = str(basic.get("proxy_for_chat") or "").strip()
+
         basic.setdefault("duckmail_base_url", config.basic.duckmail_base_url)
         basic.setdefault("duckmail_api_key", config.basic.duckmail_api_key)
         basic.setdefault("duckmail_verify_ssl", config.basic.duckmail_verify_ssl)

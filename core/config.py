@@ -225,25 +225,9 @@ class ConfigManager:
             direct_fallback=_parse_bool(outbound_data.get("direct_fallback"), True),
         )
 
-        # 兼容旧配置：如果存在旧的 proxy 字段，迁移到新字段
-        old_proxy = basic_data.get("proxy", "")
-        old_proxy_for_auth_bool = basic_data.get("proxy_for_auth")
-        old_proxy_for_chat_bool = basic_data.get("proxy_for_chat")
-
-        # 新配置优先，如果没有新配置则从旧配置迁移
+        # 兼容旧配置：如果存在新配置字段则直接使用，否则保持为空
         proxy_for_auth = basic_data.get("proxy_for_auth", "")
         proxy_for_chat = basic_data.get("proxy_for_chat", "")
-
-        # 如果新配置为空且存在旧配置，则迁移
-        if not proxy_for_auth and old_proxy:
-            # 如果旧配置中 proxy_for_auth 是布尔值且为 True，则使用旧的 proxy
-            if isinstance(old_proxy_for_auth_bool, bool) and old_proxy_for_auth_bool:
-                proxy_for_auth = old_proxy
-
-        if not proxy_for_chat and old_proxy:
-            # 如果旧配置中 proxy_for_chat 是布尔值且为 True，则使用旧的 proxy
-            if isinstance(old_proxy_for_chat_bool, bool) and old_proxy_for_chat_bool:
-                proxy_for_chat = old_proxy
 
         basic_config = BasicConfig(
             api_key=basic_data.get("api_key") or "",

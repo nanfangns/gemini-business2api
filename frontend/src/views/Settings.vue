@@ -446,6 +446,8 @@ watch(settings, (value) => {
   next.basic = next.basic || {}
   next.basic.duckmail_base_url ||= 'https://api.duckmail.sbs'
   next.basic.duckmail_verify_ssl = next.basic.duckmail_verify_ssl ?? true
+  next.basic.proxy_for_auth = typeof next.basic.proxy_for_auth === 'string' ? next.basic.proxy_for_auth : ''
+  next.basic.proxy_for_chat = typeof next.basic.proxy_for_chat === 'string' ? next.basic.proxy_for_chat : ''
   next.basic.browser_engine = next.basic.browser_engine || 'dp'
   next.basic.browser_headless = next.basic.browser_headless ?? false
   next.basic.refresh_window_hours = Number.isFinite(next.basic.refresh_window_hours)
