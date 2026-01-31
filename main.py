@@ -1966,6 +1966,77 @@ async def chat_impl(
     # 获取会话绑定管理器
     binding_mgr = get_session_binding_manager()
     
+    # ---------------------------------------------------------
+    # 5. [新增] Memory 模式管理指令拦截
+    # 仅当 api_key 模式为 MEMORY 且用户发送特定指令时触发
+    # ---------------------------------------------------------
+    if key_config.mode == ApiKeyMode.MEMORY:
+        last_user_content = ""
+        if req.messages:
+            last_msg = req.messages[-1]
+            if last_msg.role == "user":
+                 # 兼容 content 为 string 或 list (multimodal)
+                 if isinstance(last_msg.content, str):
+                     last_user_content = last_msg.content.strip()
+                 elif isinstance(last_msg.content, list):
+                     # 如果是列表，提取第一个文本部分
+                     for part in last_msg.content:
+                         if isinstance(part, dict) and part.get("type") == "text":
+                             last_user_content = part.get("text", "").strip()
+                             break
+
+        # 指令处理
+        intercept_response_content = None
+        if last_user_content == "重置":
+            logger.info(f"[COMMAND] [req_{request_id}] 触发指令: 重置 (ChatID: {chat_id_for_binding})")
+            await binding_mgr.reset_session_binding(chat_id_for_binding)
+            intercept_response_content = "✅ 记忆已重置，当前账号环境保留。"
+        
+        elif last_user_content == "换号":
+            logger.info(f"[COMMAND] [req_{request_id}] 触发指令: 换号 (ChatID: {chat_id_for_binding})")
+            await binding_mgr.remove_binding(chat_id_for_binding)
+            intercept_response_content = "🔄 账号已切换，正在连接新分身..."
+
+        if intercept_response_content:
+            # 构造响应 ID
+            resp_id = f"chatcmpl-{uuid.uuid4()}"
+            curr_time = int(time.time())
+            
+            # 记录成功请求 (Uptime)
+            await finalize_result("success", 200, None)
+
+            if req.stream:
+                async def mock_stream_generator():
+                    # 模拟流式输出
+                    chunk = {
+                        "id": resp_id,
+                        "object": "chat.completion.chunk",
+                        "created": curr_time,
+                        "model": req.model,
+                        "choices": [{"index": 0, "delta": {"role": "assistant", "content": intercept_response_content}, "finish_reason": None}]
+                    }
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                    
+                    finish_chunk = {
+                        "id": resp_id,
+                        "object": "chat.completion.chunk",
+                        "created": curr_time,
+                        "model": req.model,
+                        "choices": [{"index": 0, "delta":{}, "finish_reason": "stop"}]
+                    }
+                    yield f"data: {json.dumps(finish_chunk)}\n\n"
+                    yield "data: [DONE]\n\n"
+                
+                return StreamingResponse(mock_stream_generator(), media_type="text/event-stream")
+            else:
+                return {
+                    "id": resp_id,
+                    "object": "chat.completion",
+                    "created": curr_time,
+                    "model": req.model,
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": intercept_response_content}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                }
     
     # 检查是否已有绑定账号
     binding_info = None

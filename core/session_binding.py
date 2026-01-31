@@ -229,6 +229,22 @@ class SessionBindingManager:
                 return True
             return False
     
+    async def reset_session_binding(self, chat_id: str) -> bool:
+        """
+        重置会话绑定（仅清除 session_id，保留 account_id）
+        
+        Returns:
+            是否成功重置（True=存在并已重置，False=不存在）
+        """
+        async with self._lock:
+            if chat_id in self._bindings:
+                binding = self._bindings[chat_id]
+                binding["session_id"] = None  # 清除 Session ID
+                self._dirty = True
+                logger.info(f"[SESSION-BIND] 重置会话 ChatID={chat_id[:8]}... (保留账号: {binding.get('account_id')})")
+                return True
+            return False
+    
     def _cleanup_oldest(self) -> None:
         """清理最旧的绑定（LRU策略）"""
         if not self._bindings:

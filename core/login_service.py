@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import random
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -103,6 +104,12 @@ class LoginService(BaseTaskService[LoginTask]):
         self._append_log(task, "info", f"🚀 刷新任务已启动 (共 {len(task.account_ids)} 个账号)")
 
         for idx, account_id in enumerate(task.account_ids, 1):
+            # 队列平滑：除第一个账号外，每个账号之间随机等待 2-5 秒
+            if idx > 1:
+                delay = random.uniform(2, 5)
+                # self._append_log(task, "info", f"⏳ 等待 {delay:.1f} 秒...")
+                await asyncio.sleep(delay)
+
             # 检查是否请求取消
             if task.cancel_requested:
                 self._append_log(task, "warning", f"login task cancelled: {task.cancel_reason or 'cancelled'}")
@@ -372,8 +379,19 @@ class LoginService(BaseTaskService[LoginTask]):
             logger.debug("[LOGIN] no accounts need refresh")
             return None
 
+        # 优化策略：
+        # 1. 显示总共过期数量
+        # 2. 单次任务最多只处理 10 个，避免内存爆炸
+        total_expiring = len(expiring_accounts)
+        batch_limit = 10
+        
+        accounts_to_refresh = expiring_accounts[:batch_limit]
+        planned_count = len(accounts_to_refresh)
+        
+        logger.info(f"[LOGIN] 当前共有 {total_expiring} 个账号过期，本次计划刷新 {planned_count} 个")
+
         try:
-            return await self.start_login(expiring_accounts)
+            return await self.start_login(accounts_to_refresh)
         except Exception as exc:
             logger.warning("[LOGIN] refresh enqueue failed: %s", exc)
             return None
