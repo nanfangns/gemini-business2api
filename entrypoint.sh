@@ -1,14 +1,17 @@
 #!/bin/bash
-set -e
 
-# 启动 Xvfb 在后台
-Xvfb :99 -screen 0 1280x800x24 -ac &
+echo "[ENTRYPOINT] Starting application..."
 
-# 等待 Xvfb 启动
-sleep 3
+# 尝试启动 Xvfb（可选，失败不影响主程序）
+echo "[ENTRYPOINT] Attempting to start Xvfb..."
+if Xvfb :99 -screen 0 1280x800x24 -ac 2>/dev/null & then
+    sleep 2
+    export DISPLAY=:99
+    echo "[ENTRYPOINT] Xvfb started on DISPLAY=:99"
+else
+    echo "[ENTRYPOINT] Xvfb failed to start (this is OK for cloud platforms)"
+fi
 
-# 设置 DISPLAY 环境变量
-export DISPLAY=:99
-
-# 启动 Python 应用
+# 启动 Python 应用（无论 Xvfb 是否成功）
+echo "[ENTRYPOINT] Starting Python application..."
 exec python -u main.py
