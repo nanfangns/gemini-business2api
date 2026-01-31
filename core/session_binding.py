@@ -38,6 +38,18 @@ def extract_chat_id(
     headers = headers or {}
     body = body or {}
     
+    # 0. 【最高优先级】基于 API Key 锁定 (Single User Mode)
+    # 用户需求：无论客户端如何切分上下文，API Key 永远对应同一个云端会话
+    auth_header = headers.get("authorization", "").strip()
+    if auth_header:
+        # 提取 Key (去除 Bearer 前缀)
+        api_key = auth_header.replace("Bearer ", "").replace("bearer ", "").strip()
+        if api_key:
+            # 使用 API Key 的哈希作为全局唯一 ChatID
+            chat_id = hashlib.md5(f"apikey:{api_key}".encode()).hexdigest()
+            logger.info(f"[SESSION-BIND] ChatID锁定(API Key): {api_key[:6]}... -> {chat_id[:8]}...")
+            return chat_id, "apikey_hash"
+
     # 1. 优先检查请求头
     header_keys = ['x-conversation-id', 'x-chat-id', 'conversation-id', 'chat-id']
     for key in header_keys:

@@ -59,6 +59,6 @@ VOLUME ["/app/data"]
 EXPOSE 7860
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:7860/admin/health || exit 1
+    CMD curl -f http://127.0.0.1:${PORT:-7860}/admin/health || exit 1
 
 CMD ["./entrypoint.sh"]
