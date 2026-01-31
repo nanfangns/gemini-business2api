@@ -141,7 +141,6 @@ def build_full_context_text(messages: List['Message']) -> str:
     """仅拼接历史文本，图片只处理当次请求的"""
     prompt = ""
     for msg in messages:
-        role = "User" if msg.role in ["user", "system"] else "Assistant"
         content_str = extract_text_from_content(msg.content)
 
         # 为多模态消息添加图片标记
@@ -150,24 +149,34 @@ def build_full_context_text(messages: List['Message']) -> str:
             if image_count > 0:
                 content_str += "[图片]" * image_count
 
-        prompt += f"{role}: {content_str}\n\n"
+        # 区分角色，避免将 System 混淆为 User
+        if msg.role == "system":
+            prompt += f"System: {content_str}\n\n"
+        elif msg.role == "user":
+            prompt += f"User: {content_str}\n\n"
+        else:
+            # assistant or model
+            prompt += f"Model: {content_str}\n\n"
+            
     return prompt
 
 
 def strip_to_last_user_message(messages: list, is_first_message: bool = False) -> list:
     """
-    消息瘦身：智能裁剪消息列表
+    消息瘦身：智能裁剪消息列表 (Head-Tail Dynamic Slimming)
     
     Args:
         messages: 原始消息列表
-        is_first_message: 是否是该会话的首次消息
+        is_first_message: (已弃用，逻辑由内容决定) 是否是该会话的首次消息
         
     Returns:
         裁剪后的消息列表
         
     策略：
-    - 首次消息：保留 system 提示词（如果有）+ 最后一条 user 消息
-    - 后续消息：只保留最后一条 user 消息
+    - 逻辑一（覆盖模式）：如果包含 role: system，则保留 System + 最后一条 User
+      (强制刷新云端人设，同时清空冗余上下文)
+    - 逻辑二（省流模式）：如果不包含 role: system，则只保留最后一条 User
+      (利用云端已有的 Session 记忆维持连续性)
     """
     if not messages:
         return messages
@@ -179,16 +188,18 @@ def strip_to_last_user_message(messages: list, is_first_message: bool = False) -
             last_user_msg = msg
             break
     
-    # 如果没有 user 消息，返回最后一条
+    # 如果没有 user 消息，返回最后一条作为 fallback
     if not last_user_msg:
         return [messages[-1]]
     
-    # 如果是首次消息，检查是否有 system 提示词
-    if is_first_message:
-        system_msgs = [m for m in messages if m.get("role") == "system"]
-        if system_msgs:
-            # 返回 system 提示词 + 最后一条 user 消息
-            return system_msgs + [last_user_msg]
+    # 检查是否有 system 提示词
+    system_msgs = [m for m in messages if m.get("role") == "system"]
     
-    # 后续消息或无 system 提示词：只返回最后一条 user 消息
-    return [last_user_msg]
+    if system_msgs:
+        # 逻辑一：覆盖模式 (System + Last User)
+        # 即使是老会话，如果用户传了 System，我们认为他想强化/更新人设
+        return system_msgs + [last_user_msg]
+    else:
+        # 逻辑二：省流模式 (Only Last User)
+        # 依赖云端记忆，极致省流
+        return [last_user_msg]

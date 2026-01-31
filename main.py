@@ -52,7 +52,8 @@ from core.message import (
     get_conversation_key,
     parse_last_message,
     build_full_context_text,
-    strip_to_last_user_message
+    strip_to_last_user_message,
+    extract_text_from_content
 )
 from core.session_binding import (
     generate_chat_id,
@@ -2069,6 +2070,12 @@ async def chat_impl(
         raise
 
     # 4. 准备文本内容
+    # 提取 System Prompt (如果有的的话)
+    system_text = ""
+    for m in req.messages:
+        if m.role == "system":
+            system_text += f"{extract_text_from_content(m.content)}\n\n"
+
     if is_new_conversation:
         # 即使是新会话，如果请求包含历史消息（说明是上下文重置或指纹漂移），
         # 我们必须发送完整的上下文，以便 Google 能够"追上"之前的对话状态。
@@ -2076,13 +2083,15 @@ async def chat_impl(
             logger.info(f"[CHAT] [req_{request_id}] 检测到新会话但包含历史消息，正在恢复上下文...")
             text_to_send = build_full_context_text(req.messages)
         else:
-            text_to_send = last_text
+            # 新会话且只有一条消息（或只有 System + User）
+            text_to_send = system_text + last_text if system_text else last_text
         
         # 标记为重试模式（意为：我们发送的是全量上下文，而非增量）
         is_retry_mode = True
     else:
-        # 继续对话只发送当前消息
-        text_to_send = last_text
+        # 继续对话：发送 System (如果有) + 当前消息
+        # 用户反馈：System 提示词之前被丢弃了，现在强制加上
+        text_to_send = (system_text + last_text) if system_text else last_text
         is_retry_mode = False
         # 线程安全地更新时间戳
         await multi_account_mgr.update_session_time(session_cache_key)
