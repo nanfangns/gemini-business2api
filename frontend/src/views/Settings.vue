@@ -27,13 +27,73 @@
             <div class="rounded-2xl border border-border bg-card p-4">
               <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">基础</p>
               <div class="mt-4 space-y-3">
-                <label class="block text-xs text-muted-foreground">API 密钥</label>
-                <input
-                  v-model="localSettings.basic.api_key"
-                  type="text"
-                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
-                  placeholder="可选"
-                />
+                <div class="space-y-4">
+                  <div class="flex items-center justify-between">
+                    <label class="text-xs font-medium text-muted-foreground/70 uppercase tracking-wider">密钥管理</label>
+                    <button 
+                      @click="addApiKey"
+                      class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-all active:scale-95"
+                    >
+                      <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                      添加密钥
+                    </button>
+                  </div>
+                  
+                  <div class="space-y-4">
+                    <div
+                      v-for="(item, index) in localSettings.basic.api_keys"
+                      :key="index"
+                      class="group relative flex flex-col gap-4 rounded-[10px] border border-border/80 bg-card p-4 transition-all hover:border-foreground/20 hover:shadow-sm"
+                    >
+                      <!-- Header: Label & Delete (Split Desktop view for better Vercel look) -->
+                      <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                          <!-- Mode Tag (Memory/Fast) -->
+                          <div 
+                            @click="item.mode = (item.mode === 'fast' ? 'memory' : 'fast')"
+                            class="cursor-pointer select-none rounded-[6px] px-2 py-0.5 text-[10px] font-bold uppercase tracking-tight transition-colors"
+                            :class="item.mode === 'fast' 
+                              ? 'bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 border border-emerald-500/20' 
+                              : 'bg-indigo-500/10 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-400 border border-indigo-500/20'"
+                          >
+                            {{ item.mode === 'fast' ? 'Fast' : 'Memory' }}
+                          </div>
+                          
+                          <!-- Remark Badge -->
+                          <input
+                            v-model="item.remark"
+                            type="text"
+                            class="bg-transparent text-[10px] font-medium text-muted-foreground/60 placeholder:text-muted-foreground/30 focus:outline-none focus:text-muted-foreground w-20"
+                            placeholder="未命名备注"
+                          />
+                        </div>
+
+                        <button
+                          @click="removeApiKey(index)"
+                          class="h-6 w-6 flex items-center justify-center rounded-md border border-transparent text-muted-foreground/40 hover:text-destructive hover:bg-destructive/5 hover:border-destructive/10 transition-all opacity-0 group-hover:opacity-100"
+                        >
+                          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                        </button>
+                      </div>
+
+                      <!-- Key Input: Large, Monospace -->
+                      <div class="relative">
+                        <input
+                          v-model="item.key"
+                          type="text"
+                          class="w-full bg-transparent text-sm font-mono tracking-tight text-foreground/90 placeholder:text-muted-foreground/20 focus:outline-none"
+                          placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx"
+                          spellcheck="false"
+                        />
+                        <div class="absolute -bottom-1 left-0 h-[1px] w-0 bg-primary/20 transition-all group-focus-within:w-full"></div>
+                      </div>
+                    </div>
+
+                    <div v-if="!localSettings.basic.api_keys?.length" class="text-center py-10 rounded-[10px] border border-dashed border-border/50">
+                      <p class="text-[11px] font-medium text-muted-foreground/40 italic">空空如也，点击右上角开始</p>
+                    </div>
+                  </div>
+                </div>
                 <label class="block text-xs text-muted-foreground">基础地址</label>
                 <input
                   v-model="localSettings.basic.base_url"
@@ -444,6 +504,21 @@ watch(settings, (value) => {
   next.video_generation = next.video_generation || { output_format: 'html' }
   next.video_generation.output_format ||= 'html'
   next.basic = next.basic || {}
+  
+  // 初始化 API Keys
+  if (!next.basic.api_keys) {
+    next.basic.api_keys = []
+  }
+  // 迁移旧版 Key
+  if (next.basic.api_keys.length === 0 && next.basic.api_key) {
+    next.basic.api_keys.push({
+      key: next.basic.api_key,
+      mode: 'memory',
+      remark: '默认密钥',
+      created_at: Math.floor(Date.now() / 1000)
+    })
+  }
+
   next.basic.duckmail_base_url ||= 'https://api.duckmail.sbs'
   next.basic.duckmail_verify_ssl = next.basic.duckmail_verify_ssl ?? true
   next.basic.proxy_for_auth = typeof next.basic.proxy_for_auth === 'string' ? next.basic.proxy_for_auth : ''
@@ -497,6 +572,27 @@ watch(settings, (value) => {
 onMounted(async () => {
   await settingsStore.loadSettings()
 })
+
+const addApiKey = () => {
+  if (!localSettings.value || !localSettings.value.basic) return
+  
+  if (!localSettings.value.basic.api_keys) {
+    localSettings.value.basic.api_keys = []
+  }
+  
+  localSettings.value.basic.api_keys.push({
+    key: '',
+    mode: 'memory',
+    remark: '',
+    created_at: Math.floor(Date.now() / 1000)
+  })
+}
+
+const removeApiKey = (index: number) => {
+  if (localSettings.value?.basic?.api_keys) {
+    localSettings.value.basic.api_keys.splice(index, 1)
+  }
+}
 
 const handleSave = async () => {
   if (!localSettings.value) return

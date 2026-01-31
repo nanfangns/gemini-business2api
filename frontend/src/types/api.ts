@@ -72,9 +72,19 @@ export interface Stats {
 
 export type TempMailProvider = 'duckmail' | 'moemail' | 'freemail' | 'gptmail'
 
+export type ApiKeyMode = 'memory' | 'fast'
+
+export interface ApiKeyConfig {
+  key: string
+  mode: ApiKeyMode
+  remark: string
+  created_at: number
+}
+
 export interface Settings {
   basic: {
     api_key?: string
+    api_keys?: ApiKeyConfig[]
     base_url?: string
     proxy_for_auth?: string
     proxy_for_chat?: string

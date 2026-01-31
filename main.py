@@ -196,6 +196,43 @@ def get_beijing_time_str(ts: Optional[float] = None) -> str:
     current = datetime.fromtimestamp(ts or time.time(), tz=tz)
     return current.strftime("%Y-%m-%d %H:%M:%S")
 
+def clean_global_stats(stats: dict, window_seconds: int = 12 * 3600) -> dict:
+    """清理过期统计数据并限制字典大小"""
+    now = time.time()
+    
+    # 清理 deque 数据
+    for key in ["request_timestamps", "failure_timestamps", "rate_limit_timestamps"]:
+        if key in stats and isinstance(stats[key], (deque, list)):
+            cleaned = [ts for ts in stats[key] if now - ts < window_seconds]
+            stats[key] = deque(cleaned, maxlen=getattr(stats[key], 'maxlen', 20000) if hasattr(stats[key], 'maxlen') else 20000)
+            
+    # 清理模型请求统计
+    if "model_request_timestamps" in stats and isinstance(stats["model_request_timestamps"], dict):
+        for model in list(stats["model_request_timestamps"].keys()):
+            timestamps = stats["model_request_timestamps"][model]
+            if isinstance(timestamps, list):
+                cleaned = [ts for ts in timestamps if now - ts < window_seconds]
+                if not cleaned:
+                    del stats["model_request_timestamps"][model]
+                else:
+                    stats["model_request_timestamps"][model] = cleaned
+
+    # 限制访客 IP 记录（LRU 策略：如果超过 5000 个，清理最旧的）
+    if "visitor_ips" in stats and isinstance(stats["visitor_ips"], dict):
+        if len(stats["visitor_ips"]) > 5000:
+            # 按最后访问时间排序
+            sorted_ips = sorted(stats["visitor_ips"].items(), key=lambda x: x[1].get("last_seen", 0) if isinstance(x[1], dict) else 0)
+            # 移除最旧的 1000 个
+            for ip, _ in sorted_ips[:1000]:
+                del stats["visitor_ips"][ip]
+                
+    # 限制最近会话记录
+    if "recent_conversations" in stats and isinstance(stats["recent_conversations"], list):
+        if len(stats["recent_conversations"]) > 1000:
+            stats["recent_conversations"] = stats["recent_conversations"][-1000:]
+            
+    return stats
+
 
 def build_recent_conversation_entry(
     request_id: str,
@@ -649,6 +686,24 @@ else:
 # 全局变量：记录上次检测到的账号更新时间（用于自动刷新检测）
 _last_known_accounts_version: float | None = None
 
+async def global_stats_cleanup_task(interval_seconds: int = 3600):
+    """后台任务：定期清理全局统计数据，防止内存溢出"""
+    logger.info(f"[SYSTEM] 统计数据自动清理任务已启动（间隔: {interval_seconds}秒）")
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            async with stats_lock:
+                clean_global_stats(global_stats)
+                # 如果数据库启用，顺便保存一份
+                if storage.is_database_enabled():
+                    await storage.save_stats(global_stats)
+            logger.debug("[CLEANUP] 全局统计数据清理完成")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"[CLEANUP] 统计清理任务出错: {e}")
+            await asyncio.sleep(60)
+
 
 async def media_cleanup_task():
     """后台任务：定期清理过期的图片和视频文件"""
@@ -793,6 +848,9 @@ async def startup_event():
     if storage.is_database_enabled():
         asyncio.create_task(storage.start_stats_persistence_task(interval=60))
         logger.info("[SYSTEM] 数据库统计后台持久化任务已启动 (间隔: 60s)")
+
+    # 启动全局统计定时清理任务
+    asyncio.create_task(global_stats_cleanup_task())
 
     # 启动媒体文件定时清理任务
     asyncio.create_task(media_cleanup_task())
@@ -1117,35 +1175,13 @@ async def admin_stats(request: Request):
         return buckets
 
     async with stats_lock:
-        global_stats.setdefault("request_timestamps", deque(maxlen=20000))
-        global_stats.setdefault("failure_timestamps", deque(maxlen=10000))
-        global_stats.setdefault("rate_limit_timestamps", deque(maxlen=10000))
-        global_stats.setdefault("model_request_timestamps", {})
-
-        # 清理过期数据，保持 deque 类型
-        cleaned_request_ts = [ts for ts in global_stats["request_timestamps"] if now - ts < window_seconds]
-        global_stats["request_timestamps"] = deque(cleaned_request_ts, maxlen=20000)
-
-        cleaned_failure_ts = [ts for ts in global_stats["failure_timestamps"] if now - ts < window_seconds]
-        global_stats["failure_timestamps"] = deque(cleaned_failure_ts, maxlen=10000)
-
-        cleaned_rate_limit_ts = [ts for ts in global_stats["rate_limit_timestamps"] if now - ts < window_seconds]
-        global_stats["rate_limit_timestamps"] = deque(cleaned_rate_limit_ts, maxlen=10000)
-
-        model_request_timestamps = {}
-        for model, timestamps in global_stats["model_request_timestamps"].items():
-            model_request_timestamps[model] = [
-                ts for ts in timestamps
-                if now - ts < window_seconds
-            ]
-        global_stats["model_request_timestamps"] = model_request_timestamps
-
-        await save_stats(global_stats)
-
-        request_timestamps = list(global_stats["request_timestamps"])
-        failure_timestamps = list(global_stats["failure_timestamps"])
-        rate_limit_timestamps = list(global_stats["rate_limit_timestamps"])
+        global_stats.update(clean_global_stats(global_stats))
+        
+        request_timestamps = list(global_stats.get("request_timestamps", []))
+        failure_timestamps = list(global_stats.get("failure_timestamps", []))
+        rate_limit_timestamps = list(global_stats.get("rate_limit_timestamps", []))
         model_request_timestamps = global_stats.get("model_request_timestamps", {})
+        
         model_requests = {}
         for model in MODEL_MAPPING.keys():
             model_requests[model] = bucketize(model_request_timestamps.get(model, []))
@@ -1476,6 +1512,7 @@ async def admin_get_settings(request: Request):
     return {
         "basic": {
             "api_key": config.basic.api_key,
+            "api_keys": [k.model_dump() for k in config.basic.api_keys],
             "base_url": config.basic.base_url,
             "proxy": config.basic.proxy,
             "proxy_for_auth": config.basic.proxy_for_auth,
@@ -1539,6 +1576,10 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
 
     try:
         basic = dict(new_settings.get("basic") or {})
+        
+        # Debug Log: Check if api_keys received
+        logger.info(f"[SETTINGS] Update received basic keys: {list(basic.keys())}")
+        
         if "proxy" in basic:
             basic["proxy"] = normalize_proxy_url(str(basic.get("proxy") or ""))
         
@@ -1546,6 +1587,14 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
         basic["proxy_for_auth"] = str(basic.get("proxy_for_auth") or "").strip()
         basic["proxy_for_chat"] = str(basic.get("proxy_for_chat") or "").strip()
 
+        # 确保 api_keys 被正确处理
+        if "api_keys" in basic:
+             logger.info(f"[SETTINGS] Using new api_keys: {len(basic['api_keys'])}")
+        else:
+             # Preserve existing
+             basic["api_keys"] = [k.model_dump() for k in config.basic.api_keys]
+             logger.info(f"[SETTINGS] Preserving api_keys: {len(basic['api_keys'])}")
+             
         basic.setdefault("duckmail_base_url", config.basic.duckmail_base_url)
         basic.setdefault("duckmail_api_key", config.basic.duckmail_api_key)
         basic.setdefault("duckmail_verify_ssl", config.basic.duckmail_verify_ssl)
@@ -1778,22 +1827,26 @@ async def get_model(model_id: str, authorization: str = Header(None)):
 
 # ---------- Auth endpoints (API) ----------
 
+from core.config import ApiKeyMode, ApiKeyConfig
+
 @app.post("/v1/chat/completions")
 async def chat(
     req: ChatRequest,
     request: Request,
     authorization: Optional[str] = Header(None)
 ):
-    # API Key 验证
-    verify_api_key(API_KEY, authorization)
+    # API Key 验证 (返回配置对象)
+    key_config = verify_api_key(authorization, config.basic)
+    
     # ... (保留原有的chat逻辑)
-    return await chat_impl(req, request, authorization)
+    return await chat_impl(req, request, authorization, key_config)
 
 # chat实现函数
 async def chat_impl(
     req: ChatRequest,
     request: Request,
-    authorization: Optional[str]
+    authorization: Optional[str],
+    key_config: ApiKeyConfig
 ):
     # 生成请求ID（最优先，用于所有日志追踪）
     request_id = str(uuid.uuid4())[:6]
@@ -1915,13 +1968,25 @@ async def chat_impl(
     
     
     # 检查是否已有绑定账号
-    binding_info = await binding_mgr.get_binding(chat_id_for_binding)
+    binding_info = None
+    session_cache_key = ""
+
+    if key_config.mode == ApiKeyMode.FAST:
+        # Fast 模式：强制不读取绑定，每次请求视为独立，随机轮询
+        logger.info(f"[CHAT] [req_{request_id}] 模式: FAST (流浪模式) - 跳过绑定检查，随机选择账号")
+        binding_info = None
+        # 使用一次性 Cache Key，避免锁竞争和污染缓存
+        session_cache_key = f"fast_{request_id}_{uuid.uuid4().hex[:6]}"
+    else:
+        # Memory 模式：正常读取绑定
+        logger.info(f"[CHAT] [req_{request_id}] 模式: MEMORY (深度记忆) - 检查绑定关系")
+        binding_info = await binding_mgr.get_binding(chat_id_for_binding)
+        # 使用 chat_id_for_binding 作为 Session 缓存 key
+        session_cache_key = chat_id_for_binding
+
     bound_account_id = binding_info.get("account_id") if binding_info else None
     bound_session_id = binding_info.get("session_id") if binding_info else None
     
-    # 使用 chat_id_for_binding 作为 Session 缓存 key（保证同一对话复用同一 Session）
-    # 注意：不再使用基于消息内容的 conv_key，避免每次消息变化导致 Session 重建
-    session_cache_key = chat_id_for_binding
     session_lock = await multi_account_mgr.acquire_session_lock(session_cache_key)
 
     # 4. 在锁的保护下检查缓存和处理Session（保证同一对话的请求串行化）
@@ -1959,7 +2024,8 @@ async def chat_impl(
                 )
                 
                 # 更新绑定（确保 Session ID 被持久化）
-                await binding_mgr.set_binding(chat_id_for_binding, account_manager.config.account_id, google_session)
+                if key_config.mode == ApiKeyMode.MEMORY:
+                    await binding_mgr.set_binding(chat_id_for_binding, account_manager.config.account_id, google_session)
                 
                 uptime_tracker.record_request("account_pool", True)
             except Exception as e:
@@ -1985,7 +2051,8 @@ async def chat_impl(
                         google_session
                     )
                     # 持久化绑定关系（含 Session ID）
-                    await binding_mgr.set_binding(chat_id_for_binding, account_manager.config.account_id, google_session)
+                    if key_config.mode == ApiKeyMode.MEMORY:
+                        await binding_mgr.set_binding(chat_id_for_binding, account_manager.config.account_id, google_session)
                     is_new_conversation = True
                     logger.info(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] 新会话创建并绑定账户")
                     # 记录账号池状态（账户可用）

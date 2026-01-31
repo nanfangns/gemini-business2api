@@ -119,6 +119,8 @@ class BaseTaskService(Generic[T]):
         self.session_cache_ttl_seconds = session_cache_ttl_seconds
         self.global_stats_provider = global_stats_provider
         self.set_multi_account_mgr = set_multi_account_mgr
+        
+        self._max_completed_tasks = 50  # 最大保留50个已完成的任务历史
 
     def get_task(self, task_id: str) -> Optional[T]:
         """获取指定任务"""
@@ -240,6 +242,8 @@ class BaseTaskService(Generic[T]):
         finally:
             self._current_asyncio_task = None
             self._clear_cancel_hooks(task.id)
+            # 任务执行结束，清理过旧的历史记录
+            self._cleanup_finished_tasks()
 
     def _add_cancel_hook(self, task_id: str, hook: Callable[[], None]) -> None:
         """注册取消回调（线程安全）。"""
@@ -326,3 +330,21 @@ class BaseTaskService(Generic[T]):
         self.multi_account_mgr = new_mgr
         if self.set_multi_account_mgr:
             self.set_multi_account_mgr(new_mgr)
+
+    def _cleanup_finished_tasks(self) -> None:
+        """清理已完成的任务历史（保留最近的 50 个）"""
+        finished_tasks = [
+            t_id for t_id, t in self._tasks.items() 
+            if t.status in [TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED]
+        ]
+        
+        if len(finished_tasks) > self._max_completed_tasks:
+            # 按完成时间排序
+            finished_tasks.sort(key=lambda tid: self._tasks[tid].finished_at or 0)
+            # 移除最旧的
+            to_remove = len(finished_tasks) - self._max_completed_tasks
+            for tid in finished_tasks[:to_remove]:
+                self._tasks.pop(tid, None)
+                self._clear_cancel_hooks(tid)
+            logger.info("[%s] 已清理 %d 个过期任务历史 (当前存余: %d)", 
+                        self._log_prefix, to_remove, len(self._tasks))

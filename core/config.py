@@ -13,6 +13,7 @@
 import os
 import yaml
 import secrets
+from enum import Enum
 from pathlib import Path
 from typing import Optional, List
 from pydantic import BaseModel, Field, validator
@@ -65,9 +66,24 @@ def _parse_int(value, default: int) -> int:
 
 # ==================== 配置模型定义 ====================
 
+class ApiKeyMode(str, Enum):
+    MEMORY = "memory"
+    FAST = "fast"
+
+
+class ApiKeyConfig(BaseModel):
+    """API 密钥配置"""
+    key: str = Field(..., description="API密钥")
+    mode: ApiKeyMode = Field(default=ApiKeyMode.MEMORY, description="模式：memory(深度记忆) | fast(流浪模式)")
+    remark: str = Field(default="", description="备注")
+    created_at: int = Field(default_factory=lambda: int(time.time()), description="创建时间")
+
+
 class BasicConfig(BaseModel):
     """基础配置"""
-    api_key: str = Field(default="", description="API访问密钥（留空则公开访问）")
+    api_key: str = Field(default="", description="API访问密钥（兼容旧版，默认为 memory 模式）")
+    api_keys: List[ApiKeyConfig] = Field(default=[], description="多API密钥配置方案")
+    
     base_url: str = Field(default="", description="服务器URL（留空则自动检测）")
     proxy: str = Field(default="", description="代理地址")
     proxy_for_auth: str = Field(default="", description="账户操作代理地址（注册/登录/刷新，留空则不使用代理）")
@@ -231,6 +247,7 @@ class ConfigManager:
 
         basic_config = BasicConfig(
             api_key=basic_data.get("api_key") or "",
+            api_keys=basic_data.get("api_keys", []),  # Added field
             base_url=basic_data.get("base_url") or "",
             proxy=normalize_proxy_url(str(basic_data.get("proxy") or "")),
             proxy_for_auth=str(proxy_for_auth or "").strip(),
