@@ -56,10 +56,14 @@ def _ensure_db_loop() -> asyncio.AbstractEventLoop:
         return _db_loop
 
 
-def _run_in_db_loop(coro):
+def _run_in_db_loop(coro, timeout=10):
     loop = _ensure_db_loop()
     future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result()
+    try:
+        return future.result(timeout=timeout)
+    except Exception as e:
+        logger.warning(f"[STORAGE] Config load timed out or failed: {e}")
+        raise
 
 async def _get_pool():
     """Get (or create) the asyncpg connection pool for the current event loop."""
