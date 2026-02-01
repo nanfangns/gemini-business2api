@@ -2588,8 +2588,12 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
         yield f"data: {chunk}\n\n"
 
     # 使用流式请求
-    json_objects = []  # 收集所有响应对象用于图片解析
-    file_ids_info = None  # 保存图片信息
+    file_ids = []
+    seen_file_ids = set() # 本地去重
+    session_name = ""
+    
+    # 移除 json_objects 列表，改为流式处理图片
+    file_ids_info = None  
 
     async with http_client.stream(
         "POST",
@@ -2605,8 +2609,19 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
         # 使用异步解析器处理 JSON 数组流
         try:
             async for json_obj in parse_json_array_stream_async(r.aiter_lines()):
-                json_objects.append(json_obj)  # 收集响应
-
+                # 实时提取图片信息
+                _new_file_ids, _new_session_name = parse_images_from_response([json_obj])
+                
+                # 更新 Session Name
+                if _new_session_name:
+                    session_name = _new_session_name
+                
+                # 收集新图片 ID
+                for fid_obj in _new_file_ids:
+                    if fid_obj["fileId"] not in seen_file_ids:
+                        seen_file_ids.add(fid_obj["fileId"])
+                        file_ids.append(fid_obj)
+                        
                 # 提取文本内容
                 for reply in json_obj.get("streamAssistResponse", {}).get("answer", {}).get("replies", []):
                     content_obj = reply.get("groundedContent", {}).get("content", {})
@@ -2628,12 +2643,10 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
                         chunk = create_chunk(chat_id, created_time, model_name, {"content": text}, None)
                         yield f"data: {chunk}\n\n"
 
-            # 提取图片信息（在 async with 块内）
-            if json_objects:
-                file_ids, session_name = parse_images_from_response(json_objects)
-                if file_ids and session_name:
-                    file_ids_info = (file_ids, session_name)
-                    logger.info(f"[IMAGE] [{account_manager.config.account_id}] [req_{request_id}] 检测到{len(file_ids)}张生成图片")
+            # 循环结束后，如果有图片，打包成 info
+            if file_ids and session_name:
+                file_ids_info = (file_ids, session_name)
+                logger.info(f"[IMAGE] [{account_manager.config.account_id}] [req_{request_id}] 检测到{len(file_ids)}张生成图片")
 
         except ValueError as e:
             uptime_tracker.record_request(model_name, False)
