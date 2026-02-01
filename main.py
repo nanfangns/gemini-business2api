@@ -2399,6 +2399,22 @@ async def chat_impl(
                         # 更新账户管理器
                         account_manager = new_account
 
+                        # -------------------------------------------------------------
+                        # [FIX] 强制同步绑定关系
+                        # -------------------------------------------------------------
+                        if key_config.mode == ApiKeyMode.MEMORY:
+                            # 1. 立即更新内存绑定 (ChatID -> NewAccount)
+                            await binding_mgr.set_binding(
+                                chat_id_for_binding, 
+                                new_account.config.account_id, 
+                                new_sess
+                            )
+                            # 2. 强制持久化到数据库 (防止死锁旧账号)
+                            await binding_mgr.persist_to_db()
+                            
+                            logger.info(f"[BIND-UPDATE] ChatID {chat_id_for_binding} 已重定向至新账号 {new_account.config.email}")
+                        # -------------------------------------------------------------
+
                         # 设置重试模式（发送完整上下文）
                         current_retry_mode = True
                         current_file_ids = []  # 清空 ID，强制重新上传到新 Session
