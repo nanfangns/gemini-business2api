@@ -1990,11 +1990,13 @@ async def chat_impl(
         if last_user_content == "重置":
             logger.info(f"[COMMAND] [req_{request_id}] 触发指令: 重置 (ChatID: {chat_id_for_binding})")
             await binding_mgr.reset_session_binding(chat_id_for_binding)
+            await multi_account_mgr.clear_session_cache(chat_id_for_binding)
             intercept_response_content = "✅ 记忆已重置，当前账号环境保留。"
         
         elif last_user_content == "换号":
             logger.info(f"[COMMAND] [req_{request_id}] 触发指令: 换号 (ChatID: {chat_id_for_binding})")
             await binding_mgr.remove_binding(chat_id_for_binding)
+            await multi_account_mgr.clear_session_cache(chat_id_for_binding)
             intercept_response_content = "🔄 账号已切换，正在连接新分身..."
 
         if intercept_response_content:

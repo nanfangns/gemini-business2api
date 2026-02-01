@@ -437,6 +437,13 @@ class MultiAccountManager:
             # 检查缓存大小
             self._ensure_cache_size()
 
+    async def clear_session_cache(self, conv_key: str):
+        """线程安全地清除指定会话缓存"""
+        async with self._cache_lock:
+            if conv_key in self.global_session_cache:
+                del self.global_session_cache[conv_key]
+                logger.debug(f"[CACHE] 已清除会话缓存: {conv_key}")
+
     async def update_session_time(self, conv_key: str):
         """线程安全地更新会话时间戳"""
         async with self._cache_lock:
