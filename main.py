@@ -1093,11 +1093,26 @@ class Message(BaseModel):
     content: Union[str, List[Dict[str, Any]]]
 
 class ChatRequest(BaseModel):
-    model: str = "gemini-auto"
-    messages: List[Message]
+    model: str
+    messages: List[Dict[str, Any]]
     stream: bool = False
-    temperature: Optional[float] = 0.7
-    top_p: Optional[float] = 1.0
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    max_tokens: Optional[int] = None
+    presence_penalty: Optional[float] = None
+    frequency_penalty: Optional[float] = None
+    stop: Optional[Union[str, List[str]]] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+
+class ImageGenerationRequest(BaseModel):
+    prompt: str
+    model: Optional[str] = "dall-e-3"
+    n: Optional[int] = 1
+    size: Optional[str] = "1024x1024"
+    response_format: Optional[str] = "url"  # url or b64_json
+    quality: Optional[str] = "standard"
+    style: Optional[str] = "vivid"
 
 def create_chunk(id: str, created: int, model: str, delta: dict, finish_reason: Union[str, None]) -> str:
     chunk = {
@@ -1357,6 +1372,17 @@ async def admin_get_current_login_task(request: Request):
     if not task:
         return {"status": "idle"}
     return task.to_dict()
+
+@app.get("/admin/login/refreshing")
+@require_login()
+async def admin_get_refreshing_accounts(request: Request):
+    """获取正在刷新的账户列表"""
+    if not login_service:
+        raise HTTPException(503, "login service unavailable")
+    return {
+        "refreshing_accounts": login_service.get_refreshing_accounts()
+    }
+
 
 @app.post("/admin/login/check")
 @require_login()
@@ -1846,6 +1872,122 @@ async def get_model(model_id: str, authorization: str = Header(None)):
 # ---------- Auth endpoints (API) ----------
 
 from core.config import ApiKeyMode, ApiKeyConfig
+
+@app.post("/v1/images/generations")
+async def image_generation_impl(
+    req: ImageGenerationRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None)
+):
+    """
+    OpenAI 兼容的绘图接口
+    """
+    request_id = str(uuid.uuid4().hex[:8])
+    created_time = int(time.time())
+
+    # 1. 鉴权
+    key_config = verify_api_key(authorization, config.security.api_key)
+    if not key_config.valid:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+
+    # 2. 强制使用 gemini-imagen 模型
+    # 如果用户请求的是 dall-e-3，我们底层还是用 gemini-imagen
+    model_name = "gemini-imagen"
+    
+    logger.info(f"[IMAGE-GEN] [req_{request_id}] 收到绘图请求: {req.prompt[:50]}...")
+
+    # 3. 获取可用账户
+    account_manager = await multi_account_mgr.get_account(model_name, request_id)
+    if not account_manager:
+        raise HTTPException(status_code=503, detail="No available accounts")
+
+    try:
+        # 4. 创建 Session
+        session_name = await create_google_session(account_manager, http_client, USER_AGENT, request_id)
+        
+        # 5. 构造伪造的用户消息（触发绘图）
+        # Gemini Business 绘图触发词通常是 "generate an image of ..."
+        prompt_text = f"generate an image of {req.prompt}"
+        
+        chat_id = f"gen-{request_id}"
+        
+        # 6. 发送请求
+        # 我们复用 stream_chat_generator 的逻辑，但这里我们需要捕获图片
+        # 注意：stream_chat_generator 是流式的，我们需要消费它直到结束
+        
+        # 构造请求体
+        body = {
+            "configId": account_manager.config.config_id,
+            "additionalParams": {"token": "-"},
+            "streamAssistRequest": {
+                "session": session_name,
+                "txt": prompt_text,
+                "clientType": "BIZ_WEB"
+            }
+        }
+        
+        headers = get_common_headers(await account_manager.get_jwt(request_id), USER_AGENT)
+        
+        generated_images = []
+        
+        async with http_client.stream(
+            "POST",
+            "https://biz-discoveryengine.googleapis.com/v1alpha/locations/global/widgetStreamAssist",
+            headers=headers,
+            json=body,
+        ) as r:
+            if r.status_code != 200:
+                raise HTTPException(status_code=r.status_code, detail=f"Upstream Error: {r.status_code}")
+
+            # 解析流式响应寻找图片
+            async for json_obj in parse_json_array_stream_async(r.aiter_lines()):
+                file_ids, _ = parse_images_from_response([json_obj])
+                for f_info in file_ids:
+                    generated_images.append(f_info)
+
+        if not generated_images:
+            raise HTTPException(status_code=500, detail="Image generation failed (no images returned)")
+            
+        # 7. 下载并处理图片
+        data_list = []
+        base_url = str(request.base_url).rstrip("/")
+        # 如果配置了 HTTPS URL，优先使用配置的
+        if os.environ.get("BASE_URL"):
+            base_url = os.environ.get("BASE_URL").rstrip("/")
+
+        for img_info in generated_images:
+            file_id = img_info["fileId"]
+            mime = img_info.get("mimeType", "image/png")
+            
+            # 下载图片
+            img_data = await download_image_with_jwt(
+                account_manager, 
+                session_name, 
+                file_id, 
+                http_client, 
+                USER_AGENT, 
+                request_id
+            )
+            
+            if req.response_format == "b64_json":
+                b64_data = base64.b64encode(img_data).decode()
+                data_list.append({"b64_json": b64_data, "revised_prompt": req.prompt})
+            else:
+                # 保存到本地/HuggingFace 并返回 URL
+                try:
+                    url = save_image_to_hf(img_data, chat_id, file_id, mime, base_url, IMAGE_DIR)
+                    data_list.append({"url": url, "revised_prompt": req.prompt})
+                except Exception as e:
+                    logger.error(f"[IMAGE-GEN] [req_{request_id}] 保存图片失败: {str(e)}")
+
+        logger.info(f"[IMAGE-GEN] [req_{request_id}] 图片生成完成: {len(data_list)} 张")
+
+        return {"created": created_time, "data": data_list}
+
+    except Exception as e:
+        logger.error(f"[IMAGE-GEN] [req_{request_id}] 图片生成失败: {type(e).__name__}: {str(e)}")
+        raise
+
 
 @app.post("/v1/chat/completions")
 async def chat(

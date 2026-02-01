@@ -447,3 +447,42 @@ class LoginService(BaseTaskService[LoginTask]):
     def stop_polling(self) -> None:
         self._is_polling = False
         logger.info("[LOGIN] stopping polling")
+
+    def get_refreshing_accounts(self) -> List[Dict[str, Any]]:
+        """获取当前正在刷新（或等待刷新）的账户列表"""
+        refreshing_list = []
+        # 获取任务快照，避免迭代时变更
+        tasks = list(self._tasks.values())
+
+        for task in tasks:
+            # 只关注未完成的任务
+            if task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING):
+                continue
+
+            # 当前执行到的索引 (progress即为当前正在处理或下一个要处理的索引)
+            current_index = task.progress
+
+            for i, acc_id in enumerate(task.account_ids):
+                # 判定单个账号的状态
+                item_status = "waiting"
+                
+                if task.status == TaskStatus.PENDING:
+                    item_status = "pending"
+                elif task.status == TaskStatus.RUNNING:
+                    if i < current_index:
+                        # 已经完成该账号，不包含在“正在刷新”列表中
+                        continue
+                    elif i == current_index:
+                        item_status = "running"
+                    else:
+                        item_status = "waiting"
+
+                refreshing_list.append({
+                    "account_id": acc_id,
+                    "status": item_status,
+                    "task_id": task.id,
+                    "task_status": task.status.value,
+                    "queued_at": task.created_at,
+                })
+        
+        return refreshing_list
