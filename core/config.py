@@ -214,6 +214,18 @@ class ConfigManager:
         # 1. 加载 YAML 配置
         yaml_data = self._load_yaml()
 
+        # [新增] 数据库模式下，自动合并本地文件中的新 API Key
+        if storage.is_database_enabled() and self.yaml_path.exists():
+            try:
+                with open(self.yaml_path, 'r', encoding='utf-8') as f:
+                    file_data = yaml.safe_load(f) or {}
+                
+                if self._merge_api_keys_from_file(yaml_data, file_data):
+                    print(f"[CONFIG] 检测到本地配置文件包含新 API Key，已自动同步到数据库")
+                    self.save_yaml(yaml_data)
+            except Exception as e:
+                print(f"[WARN] 配置自动同步失败: {e}")
+
         # 2. 加载安全配置（仅从环境变量，不允许 Web 修改）
         security_config = SecurityConfig(
             admin_key=os.getenv("ADMIN_KEY", ""),
@@ -338,6 +350,52 @@ class ConfigManager:
             except Exception as e:
                 print(f"[WARN] 加载配置文件失败: {e}，使用默认配置")
         return {}
+
+    def _merge_api_keys_from_file(self, config_data: dict, file_data: dict) -> bool:
+        """
+        将 file_data 中的新 API Key 合并到 config_data (DB配置) 中
+        返回是否发生了变更
+        """
+        changed = False
+        
+        # 确保基本结构存在
+        basic_config = config_data.get("basic", {})
+        if "basic" not in config_data:
+            config_data["basic"] = basic_config
+            changed = True
+            
+        existing_keys = basic_config.get("api_keys", [])
+        if "api_keys" not in basic_config:
+            basic_config["api_keys"] = existing_keys
+            # 注意：即便这里初始化为空列表，但不一定视为change，取决于是否有新key加入
+        
+        # 构建现有 Key 的集合（用于快速查重）
+        existing_key_values = {k.get("key") for k in existing_keys if isinstance(k, dict) and "key" in k}
+        
+        # 遍历文件的配置
+        file_basic = file_data.get("basic", {})
+        file_keys = file_basic.get("api_keys", [])
+        
+        for item in file_keys:
+            if not isinstance(item, dict):
+                continue
+            
+            key_val = item.get("key")
+            if key_val and key_val not in existing_key_values:
+                # 发现新 Key，添加并标记变更
+                # 补充默认字段（与 Config Model 保持一致）
+                new_entry = {
+                    "key": key_val,
+                    "mode": item.get("mode", "memory"),
+                    "remark": item.get("remark", "") or "Auto-synced from static config",
+                    "created_at": item.get("created_at", int(time.time()))
+                }
+                existing_keys.append(new_entry)
+                existing_key_values.add(key_val) # 防止重复添加
+                changed = True
+                print(f"[CONFIG] 同步新 Key: {key_val[:8]}... (Mode: {new_entry['mode']})")
+                
+        return changed
 
     def _generate_secret(self) -> str:
         """生成随机密钥"""
