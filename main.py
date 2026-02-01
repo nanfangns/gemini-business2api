@@ -1094,7 +1094,7 @@ class Message(BaseModel):
 
 class ChatRequest(BaseModel):
     model: str
-    messages: List[Dict[str, Any]]
+    messages: List[Message]
     stream: bool = False
     temperature: Optional[float] = None
     top_p: Optional[float] = None
