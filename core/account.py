@@ -413,8 +413,39 @@ class MultiAccountManager:
                 del self.global_session_cache[key]
             logger.info(f"[CACHE] LRU清理 {remove_count} 个最旧会话缓存")
 
-    async def start_background_cleanup(self):
-        """启动后台缓存清理任务（每5分钟执行一次）"""
+    async def start_background_task(self):
+        """启动后台清理任务"""
+        if hasattr(self, "_cleanup_task") and self._cleanup_task and not self._cleanup_task.done():
+            return
+        
+        try:
+            loop = asyncio.get_running_loop()
+            self._cleanup_task = loop.create_task(self._background_cleanup_loop())
+            logger.info("[MULTI] 后台清理任务已启动")
+        except RuntimeError:
+            pass
+
+    async def shutdown(self):
+        """关闭管理器，清理资源"""
+        if hasattr(self, "_cleanup_task") and self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
+            logger.info("[MULTI] 后台清理任务已停止")
+        
+        # 清理会话缓存
+        await self.clear_all_cache()
+
+    async def clear_all_cache(self):
+        """清空所有会话缓存"""
+        async with self._cache_lock:
+            self.global_session_cache.clear()
+
+    async def _background_cleanup_loop(self):
+        """后台缓存清理任务（每5分钟执行一次）"""
         try:
             while True:
                 await asyncio.sleep(300)  # 5分钟
@@ -676,15 +707,23 @@ def reload_accounts(
     global_stats: dict
 ) -> MultiAccountManager:
     """重新加载账户配置（重置所有错误状态，仅保留统计数据）"""
-    # 仅保存统计数据（conversation_count）
+    # 1. 备份统计数据
     old_stats = {}
     for account_id, account_mgr in multi_account_mgr.accounts.items():
         old_stats[account_id] = {
             "conversation_count": account_mgr.conversation_count
         }
 
-    # 清空会话缓存并重新加载配置
-    multi_account_mgr.global_session_cache.clear()
+    # 2. 关闭旧管理器（停止后台任务，清理资源）
+    # 注意：这是一个异步操作，但在此同步函数中无法直接 await。
+    # 解决方案：schedule the shutdown task on current loop
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(multi_account_mgr.shutdown())
+    except RuntimeError:
+        pass
+    
+    # 3. 加载新配置
     new_mgr = load_multi_account_config(
         http_client,
         user_agent,
@@ -694,12 +733,19 @@ def reload_accounts(
         global_stats
     )
 
-    # 仅恢复统计数据，错误状态全部重置
+    # 4. 启动新管理器的后台任务
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(new_mgr.start_background_task())
+    except RuntimeError:
+        pass
+
+    # 5. 恢复统计数据
     for account_id, stats in old_stats.items():
         if account_id in new_mgr.accounts:
             account_mgr = new_mgr.accounts[account_id]
             account_mgr.conversation_count = stats["conversation_count"]
-            # 确保错误状态已重置（虽然load_multi_account_config已经初始化，但显式确认）
+            # 确保错误状态已重置
             account_mgr.is_available = True
             account_mgr.last_error_time = 0.0
             account_mgr.last_cooldown_time = 0.0

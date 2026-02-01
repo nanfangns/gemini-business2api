@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from util.streaming_parser import parse_json_array_stream_async
 from collections import deque
 from threading import Lock
+import gc
 
 # ---------- 数据目录配置 ----------
 # 自动检测环境：HF Spaces Pro 使用 /data，本地使用 ./data
@@ -795,6 +796,12 @@ async def auto_refresh_accounts_task():
                     global_stats
                 )
 
+                # 更新全局服务引用
+                _set_multi_account_mgr(multi_account_mgr)
+
+                # 显式垃圾回收，确保旧对象被清理
+                gc.collect()
+
                 _last_known_accounts_version = db_version
                 logger.info(f"[AUTO-REFRESH] 账号刷新完成，当前账号数: {len(multi_account_mgr.accounts)}")
 
@@ -832,7 +839,7 @@ async def startup_event():
     logger.info(f"[SYSTEM] 统计数据已加载: {global_stats['total_requests']} 次请求, {global_stats['total_visitors']} 位访客")
 
     # 启动缓存清理任务
-    asyncio.create_task(multi_account_mgr.start_background_cleanup())
+    await multi_account_mgr.start_background_task()
     logger.info("[SYSTEM] 后台缓存清理任务已启动（间隔: 5分钟）")
 
     # 启动自动刷新账号任务（仅数据库模式有效）
@@ -1256,6 +1263,8 @@ async def admin_update_config(request: Request, accounts_data: list = Body(...))
             ACCOUNT_FAILURE_THRESHOLD, RATE_LIMIT_COOLDOWN_SECONDS,
             SESSION_CACHE_TTL_SECONDS, global_stats
         )
+        _set_multi_account_mgr(multi_account_mgr)
+        gc.collect()
         return {"status": "success", "message": "配置已更新", "account_count": len(multi_account_mgr.accounts)}
     except Exception as e:
         logger.error(f"[CONFIG] 更新配置失败: {str(e)}")
@@ -1400,6 +1409,8 @@ async def admin_delete_account(request: Request, account_id: str):
             ACCOUNT_FAILURE_THRESHOLD, RATE_LIMIT_COOLDOWN_SECONDS,
             SESSION_CACHE_TTL_SECONDS, global_stats
         )
+        _set_multi_account_mgr(multi_account_mgr)
+        gc.collect()
         return {"status": "success", "message": f"账户 {account_id} 已删除", "account_count": len(multi_account_mgr.accounts)}
     except Exception as e:
         logger.error(f"[CONFIG] 删除账户失败: {str(e)}")
@@ -1428,6 +1439,8 @@ async def admin_bulk_delete_accounts(request: Request, account_ids: list[str]):
             SESSION_CACHE_TTL_SECONDS,
             global_stats
         )
+        _set_multi_account_mgr(multi_account_mgr)
+        gc.collect()
         return {"status": "success", "success_count": success_count, "errors": errors}
     except Exception as e:
         logger.error(f"[CONFIG] 批量删除账户失败: {str(e)}")
@@ -1444,6 +1457,7 @@ async def admin_disable_account(request: Request, account_id: str):
             ACCOUNT_FAILURE_THRESHOLD, RATE_LIMIT_COOLDOWN_SECONDS,
             SESSION_CACHE_TTL_SECONDS, global_stats
         )
+        _set_multi_account_mgr(multi_account_mgr)
         return {"status": "success", "message": f"账户 {account_id} 已禁用", "account_count": len(multi_account_mgr.accounts)}
     except Exception as e:
         logger.error(f"[CONFIG] 禁用账户失败: {str(e)}")
@@ -1460,6 +1474,7 @@ async def admin_enable_account(request: Request, account_id: str):
             ACCOUNT_FAILURE_THRESHOLD, RATE_LIMIT_COOLDOWN_SECONDS,
             SESSION_CACHE_TTL_SECONDS, global_stats
         )
+        _set_multi_account_mgr(multi_account_mgr)
 
         # 重置运行时错误状态（允许手动恢复错误禁用的账户）
         if account_id in multi_account_mgr.accounts:
@@ -1482,6 +1497,7 @@ async def admin_bulk_enable_accounts(request: Request, account_ids: list[str]):
     success_count, errors = _bulk_update_account_disabled_status(
         account_ids, False, multi_account_mgr
     )
+    _set_multi_account_mgr(multi_account_mgr)
     # 重置运行时错误状态
     for account_id in account_ids:
         if account_id in multi_account_mgr.accounts:
@@ -1499,6 +1515,7 @@ async def admin_bulk_disable_accounts(request: Request, account_ids: list[str]):
     success_count, errors = _bulk_update_account_disabled_status(
         account_ids, True, multi_account_mgr
     )
+    _set_multi_account_mgr(multi_account_mgr)
     return {"status": "success", "success_count": success_count, "errors": errors}
 
 # ---------- Auth endpoints (API) ----------
