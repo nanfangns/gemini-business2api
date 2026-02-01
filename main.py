@@ -326,6 +326,7 @@ logger = logging.getLogger("gemini")
 # which can accumulate as zombies (<defunct>) in long-running services.
 try:
     from core.child_reaper import install_child_reaper
+    from core.memory_utils import trim_memory
 
     install_child_reaper(log=lambda m: logger.warning(m))
 except Exception:
@@ -800,7 +801,7 @@ async def auto_refresh_accounts_task():
                 _set_multi_account_mgr(multi_account_mgr)
 
                 # 显式垃圾回收，确保旧对象被清理
-                gc.collect()
+                trim_memory()
 
                 _last_known_accounts_version = db_version
                 logger.info(f"[AUTO-REFRESH] 账号刷新完成，当前账号数: {len(multi_account_mgr.accounts)}")
@@ -1264,7 +1265,7 @@ async def admin_update_config(request: Request, accounts_data: list = Body(...))
             SESSION_CACHE_TTL_SECONDS, global_stats
         )
         _set_multi_account_mgr(multi_account_mgr)
-        gc.collect()
+        trim_memory()
         return {"status": "success", "message": "配置已更新", "account_count": len(multi_account_mgr.accounts)}
     except Exception as e:
         logger.error(f"[CONFIG] 更新配置失败: {str(e)}")
@@ -1410,7 +1411,7 @@ async def admin_delete_account(request: Request, account_id: str):
             SESSION_CACHE_TTL_SECONDS, global_stats
         )
         _set_multi_account_mgr(multi_account_mgr)
-        gc.collect()
+        trim_memory()
         return {"status": "success", "message": f"账户 {account_id} 已删除", "account_count": len(multi_account_mgr.accounts)}
     except Exception as e:
         logger.error(f"[CONFIG] 删除账户失败: {str(e)}")
@@ -1440,7 +1441,7 @@ async def admin_bulk_delete_accounts(request: Request, account_ids: list[str]):
             global_stats
         )
         _set_multi_account_mgr(multi_account_mgr)
-        gc.collect()
+        trim_memory()
         return {"status": "success", "success_count": success_count, "errors": errors}
     except Exception as e:
         logger.error(f"[CONFIG] 批量删除账户失败: {str(e)}")

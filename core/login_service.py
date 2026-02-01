@@ -154,6 +154,15 @@ class LoginService(BaseTaskService[LoginTask]):
         self._append_log(task, "info", f"login task finished ({task.success_count}/{len(task.account_ids)})")
         self._current_task_id = None
         self._append_log(task, "info", f"🏁 刷新任务完成 (成功: {task.success_count}, 失败: {task.fail_count}, 总计: {len(task.account_ids)})")
+        
+        # 任务完成后强制回收内存 (针对 Zeabur/Linux 环境)
+        try:
+            from core.memory_utils import trim_memory
+            trim_memory()
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"[LOGIN] Memory trim failed: {e}")
 
     def _refresh_one(self, account_id: str, task: LoginTask) -> dict:
         """刷新单个账户"""
