@@ -186,9 +186,8 @@ class LoginService(BaseTaskService[LoginTask]):
         self._current_task_id = None
         self._append_log(task, "info", f"🏁 刷新任务完成 (成功: {task.success_count}, 失败: {task.fail_count}, 总计: {len(task.account_ids)})")
 
-    def _refresh_one(self, account_id: str, task: LoginTask) -> dict:
+    def _refresh_one(self, account_id: str, task: LoginTask, accounts: List[Dict[str, Any]]) -> dict:
         """刷新单个账户"""
-        accounts = load_accounts_from_source()
         account = next((acc for acc in accounts if acc.get("id") == account_id), None)
         if not account:
             return {"success": False, "email": account_id, "error": "账号不存在"}
