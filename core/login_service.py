@@ -102,51 +102,74 @@ class LoginService(BaseTaskService[LoginTask]):
         """异步执行登录任务（支持取消）。"""
         loop = asyncio.get_running_loop()
         self._append_log(task, "info", f"🚀 刷新任务已启动 (共 {len(task.account_ids)} 个账号)")
+        accounts_data = load_accounts_from_source()
+        updated_accounts = False
+        refreshed_configs: Dict[str, Dict[str, Any]] = {}
+        cancelled_early = False
 
-        for idx, account_id in enumerate(task.account_ids, 1):
-            # 队列平滑：除第一个账号外，每个账号之间随机等待 2-5 秒
-            if idx > 1:
-                delay = random.uniform(2, 5)
-                # self._append_log(task, "info", f"⏳ 等待 {delay:.1f} 秒...")
-                await asyncio.sleep(delay)
+        try:
+            for idx, account_id in enumerate(task.account_ids, 1):
+                # 队列平滑：除第一个账号外，每个账号之间随机等待 2-5 秒
+                if idx > 1:
+                    delay = random.uniform(2, 5)
+                    # self._append_log(task, "info", f"⏳ 等待 {delay:.1f} 秒...")
+                    await asyncio.sleep(delay)
 
-            # 检查是否请求取消
-            if task.cancel_requested:
-                self._append_log(task, "warning", f"login task cancelled: {task.cancel_reason or 'cancelled'}")
-                task.status = TaskStatus.CANCELLED
-                task.finished_at = time.time()
-                return
+                # 检查是否请求取消
+                if task.cancel_requested:
+                    self._append_log(task, "warning", f"login task cancelled: {task.cancel_reason or 'cancelled'}")
+                    cancelled_early = True
+                    break
 
-            try:
-                self._append_log(task, "info", f"📊 进度: {idx}/{len(task.account_ids)}")
-                self._append_log(task, "info", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                self._append_log(task, "info", f"🔄 开始刷新账号: {account_id}")
-                self._append_log(task, "info", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                result = await loop.run_in_executor(self._executor, self._refresh_one, account_id, task)
-            except TaskCancelledError:
-                # 线程侧已触发取消，直接结束任务
-                task.status = TaskStatus.CANCELLED
-                task.finished_at = time.time()
-                return
-            except Exception as exc:
-                result = {"success": False, "email": account_id, "error": str(exc)}
-            task.progress += 1
-            task.results.append(result)
+                try:
+                    self._append_log(task, "info", f"📊 进度: {idx}/{len(task.account_ids)}")
+                    self._append_log(task, "info", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                    self._append_log(task, "info", f"🔄 开始刷新账号: {account_id}")
+                    self._append_log(task, "info", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                    result = await loop.run_in_executor(
+                        self._executor, self._refresh_one, account_id, task, accounts_data
+                    )
+                except TaskCancelledError:
+                    # 线程侧已触发取消，直接结束任务
+                    cancelled_early = True
+                    break
+                except Exception as exc:
+                    result = {"success": False, "email": account_id, "error": str(exc)}
 
-            if result.get("success"):
-                task.success_count += 1
-                self._append_log(task, "info", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                self._append_log(task, "info", f"🎉 刷新成功: {account_id}")
-                self._append_log(task, "info", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            else:
-                task.fail_count += 1
-                error = result.get('error', '未知错误')
-                self._append_log(task, "error", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                self._append_log(task, "error", f"❌ 刷新失败: {account_id}")
-                self._append_log(task, "error", f"❌ 失败原因: {error}")
-                self._append_log(task, "error", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                task.progress += 1
+                task.results.append(result)
 
-        if task.cancel_requested:
+                if result.get("success"):
+                    task.success_count += 1
+                    updated_config = result.get("config") or {}
+                    if updated_config:
+                        refreshed_configs[account_id] = updated_config
+                        for acc in accounts_data:
+                            if acc.get("id") == account_id:
+                                acc.update(updated_config)
+                                updated_accounts = True
+                                break
+                    self._append_log(task, "info", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                    self._append_log(task, "info", f"🎉 刷新成功: {account_id}")
+                    self._append_log(task, "info", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                else:
+                    task.fail_count += 1
+                    error = result.get('error', '未知错误')
+                    self._append_log(task, "error", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                    self._append_log(task, "error", f"❌ 刷新失败: {account_id}")
+                    self._append_log(task, "error", f"❌ 失败原因: {error}")
+                    self._append_log(task, "error", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        finally:
+            if updated_accounts:
+                latest_accounts = load_accounts_from_source()
+                if refreshed_configs:
+                    for acc in latest_accounts:
+                        account_id = acc.get("id")
+                        if account_id in refreshed_configs:
+                            acc.update(refreshed_configs[account_id])
+                self._apply_accounts_update(latest_accounts)
+
+        if task.cancel_requested or cancelled_early:
             task.status = TaskStatus.CANCELLED
         else:
             task.status = TaskStatus.SUCCESS if task.fail_count == 0 else TaskStatus.FAILED
@@ -154,7 +177,7 @@ class LoginService(BaseTaskService[LoginTask]):
         self._append_log(task, "info", f"login task finished ({task.success_count}/{len(task.account_ids)})")
         self._current_task_id = None
         self._append_log(task, "info", f"🏁 刷新任务完成 (成功: {task.success_count}, 失败: {task.fail_count}, 总计: {len(task.account_ids)})")
-        
+
         # 任务完成后强制回收内存 (针对 Zeabur/Linux 环境)
         try:
             from core.memory_utils import trim_memory
@@ -164,9 +187,8 @@ class LoginService(BaseTaskService[LoginTask]):
         except Exception as e:
             logger.warning(f"[LOGIN] Memory trim failed: {e}")
 
-    def _refresh_one(self, account_id: str, task: LoginTask) -> dict:
+    def _refresh_one(self, account_id: str, task: LoginTask, accounts: List[Dict[str, Any]]) -> dict:
         """刷新单个账户"""
-        accounts = load_accounts_from_source()
         account = next((acc for acc in accounts if acc.get("id") == account_id), None)
         if not account:
             return {"success": False, "email": account_id, "error": "账号不存在"}
@@ -318,13 +340,7 @@ class LoginService(BaseTaskService[LoginTask]):
             config_data["mail_password"] = ""
         config_data["disabled"] = account.get("disabled", False)
 
-        for acc in accounts:
-            if acc.get("id") == account_id:
-                acc.update(config_data)
-                break
-
-        self._apply_accounts_update(accounts)
-        log_cb("info", "✅ 配置已保存到数据库")
+        log_cb("info", "✅ 配置已更新，等待批量保存")
         return {"success": True, "email": account_id, "config": config_data}
 
 
