@@ -11,6 +11,8 @@ from urllib.parse import quote
 
 from DrissionPage import ChromiumPage, ChromiumOptions
 from core.base_task_service import TaskCancelledError
+from core.concurrency import BROWSER_LOCK
+import psutil
 
 
 # 常量
@@ -58,7 +60,10 @@ class GeminiAutomation:
         page = self._page
         if page:
             try:
+                browser_pid = getattr(page, 'process_id', None)
                 page.quit()
+                if browser_pid:
+                    self._kill_browser_process(browser_pid)
             except Exception:
                 pass
 
@@ -74,29 +79,37 @@ class GeminiAutomation:
             self._log("warning", f"⚠️ 清理临时目录失败: {e}")
 
     def login_and_extract(self, email: str, mail_client) -> dict:
-        """执行登录并提取配置"""
-        page = None
-        user_data_dir = None
-        try:
-            page = self._create_page()
-            user_data_dir = getattr(page, 'user_data_dir', None)
-            self._page = page
-            self._user_data_dir = user_data_dir
-            return self._run_flow(page, email, mail_client)
-        except TaskCancelledError:
-            raise
-        except Exception as exc:
-            self._log("error", f"automation error: {exc}")
-            return {"success": False, "error": str(exc)}
-        finally:
-            if page:
-                try:
-                    page.quit()
-                except Exception:
-                    pass
-            self._page = None
-            self._cleanup_user_data(user_data_dir)
-            self._user_data_dir = None
+        """执行登录并提取配置（加全局锁）"""
+        self._log("info", "🔒 正在等待浏览器资源锁...")
+        with BROWSER_LOCK:
+            self._log("info", "🔓 已获取浏览器资源锁")
+            page = None
+            user_data_dir = None
+            try:
+                page = self._create_page()
+                user_data_dir = getattr(page, 'user_data_dir', None)
+                self._page = page
+                self._user_data_dir = user_data_dir
+                return self._run_flow(page, email, mail_client)
+            except TaskCancelledError:
+                raise
+            except Exception as exc:
+                self._log("error", f"automation error: {exc}")
+                return {"success": False, "error": str(exc)}
+            finally:
+                if page:
+                    try:
+                        page.quit()
+                    except Exception:
+                        pass
+                
+                # 无论 page.quit() 是否成功，都执行一次彻底的扫除
+                self._kill_browser_process()
+                
+                self._page = None
+                self._cleanup_user_data(user_data_dir)
+                self._user_data_dir = None
+                self._log("info", "🔓 释放浏览器资源锁")
 
     def _create_page(self) -> ChromiumPage:
         """创建浏览器页面"""
@@ -398,7 +411,7 @@ class GeminiAutomation:
                 self._log("warning", f"⚠️ 点击按钮失败: {e}")
 
         # 方法2: 通过关键词查找
-        keywords = ["通过电子邮件发送验证码", "通过电子邮件发送", "email", "Email", "Send code", "Send verification", "Verification code"]
+        keywords = ["通过电子邮件发送验证码", "通过电子邮件发送", "email", "Email", "Send code", "Send verification", "Verification code", "获取验证码", "Get code"]
         try:
             self._log("info", f"🔍 通过关键词搜索按钮: {keywords}")
             buttons = page.eles("tag:button")
@@ -415,6 +428,32 @@ class GeminiAutomation:
                         self._log("warning", f"⚠️ 点击按钮失败: {e}")
         except Exception as e:
             self._log("warning", f"⚠️ 搜索按钮异常: {e}")
+
+        # 方法3: 查找 div[role='button'] (Google 常用)
+        try:
+            self._log("info", "🔍 尝试查找 div[role='button']...")
+            div_btns = page.eles("css:div[role='button']")
+            for btn in div_btns:
+                text = (btn.text or "").strip()
+                if text and any(kw in text for kw in keywords):
+                    try:
+                        self._log("info", f"✅ 找到匹配 div 按钮: '{text}'")
+                        btn.click()
+                        self._log("info", "✅ 成功点击发送验证码 div 按钮")
+                        time.sleep(3)
+                        return True
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # 增强调试：如果没有找到按钮，输出页面上所有按钮文本
+        try:
+            buttons = page.eles("tag:button")
+            btn_texts = [b.text for b in buttons]
+            self._log("warning", f"⚠️ 未找到匹配按钮。页面按钮列表: {btn_texts}")
+        except Exception:
+            pass
 
         # 检查是否已经在验证码输入页面
         code_input = page.ele("css:input[jsname='ovqh0b']", timeout=2) or page.ele("css:input[name='pinInput']", timeout=1)
@@ -670,3 +709,29 @@ class GeminiAutomation:
         """生成随机User-Agent"""
         v = random.choice(["120.0.0.0", "121.0.0.0", "122.0.0.0"])
         return f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{v} Safari/537.36"
+
+    def _kill_browser_process(self, pid: int = None) -> None:
+        """强制清理当前进程下的所有浏览器子进程"""
+        try:
+            # 不再依赖传入的 PID，而是扫描当前 Python 进程的所有子进程
+            import psutil
+            current_proc = psutil.Process()
+            children = current_proc.children(recursive=True)
+            
+            for child in children:
+                try:
+                    name = child.name().lower()
+                    # 匹配 chrome, chromium, google-chrome 等
+                    if "chrom" in name or "google-chrome" in name:
+                        self._log("info", f"🔪 发现残留进程，强制清理: PID={child.pid} Name={name}")
+                        child.kill()
+                        try:
+                            # 必须调用 wait() 来回收僵尸进程 (reap zombies)，否则在 Docker (PID 1) 环境下会残留
+                            child.wait(timeout=2)
+                        except psutil.TimeoutExpired:
+                            pass
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+                    
+        except Exception as e:
+            self._log("warning", f"⚠️ 进程清理异常: {e}")

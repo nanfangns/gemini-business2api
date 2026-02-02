@@ -15,6 +15,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from core.base_task_service import TaskCancelledError
+from core.concurrency import BROWSER_LOCK
+import psutil
 
 
 # 常量
@@ -50,17 +52,21 @@ class GeminiAutomationUC:
             pass
 
     def login_and_extract(self, email: str, mail_client) -> dict:
-        """执行登录并提取配置"""
-        try:
-            self._create_driver()
-            return self._run_flow(email, mail_client)
-        except TaskCancelledError:
-            raise
-        except Exception as exc:
-            self._log("error", f"automation error: {exc}")
-            return {"success": False, "error": str(exc)}
-        finally:
-            self._cleanup()
+        """执行登录并提取配置（加全局锁）"""
+        self._log("info", "🔒 正在等待浏览器资源锁 (UC)...")
+        with BROWSER_LOCK:
+            self._log("info", "🔓 已获取浏览器资源锁 (UC)")
+            try:
+                self._create_driver()
+                return self._run_flow(email, mail_client)
+            except TaskCancelledError:
+                raise
+            except Exception as exc:
+                self._log("error", f"automation error: {exc}")
+                return {"success": False, "error": str(exc)}
+            finally:
+                self._cleanup()
+                self._log("info", "🔓 释放浏览器资源锁 (UC)")
 
     def _create_driver(self):
         """创建浏览器驱动"""
@@ -275,7 +281,7 @@ class GeminiAutomationUC:
             pass
 
         # 方法2: 通过关键词查找按钮
-        keywords = ["通过电子邮件发送验证码", "通过电子邮件发送", "email", "Email", "Send code", "Send verification", "Verification code"]
+        keywords = ["通过电子邮件发送验证码", "通过电子邮件发送", "email", "Email", "Send code", "Send verification", "Verification code", "获取验证码", "Get code"]
         try:
             buttons = self.driver.find_elements(By.TAG_NAME, "button")
             for btn in buttons:
@@ -284,6 +290,26 @@ class GeminiAutomationUC:
                     self.driver.execute_script("arguments[0].click();", btn)
                     time.sleep(2)
                     return True
+        except Exception:
+            pass
+
+        # 方法2.5: 查找 div[role='button']
+        try:
+            div_btns = self.driver.find_elements(By.CSS_SELECTOR, "div[role='button']")
+            for btn in div_btns:
+                text = btn.text.strip() if btn.text else ""
+                if text and any(kw in text for kw in keywords):
+                    self.driver.execute_script("arguments[0].click();", btn)
+                    time.sleep(2)
+                    return True
+        except Exception:
+            pass
+
+        # 增强调试：如果没有找到按钮，输出页面上所有按钮文本
+        try:
+            buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            btn_texts = [b.text for b in buttons]
+            self._log("warning", f"⚠️ 未找到匹配按钮。页面按钮列表: {btn_texts}")
         except Exception:
             pass
 
@@ -475,6 +501,8 @@ class GeminiAutomationUC:
             except Exception:
                 pass
 
+        self._kill_browser_process()
+
         if self.user_data_dir:
             try:
                 import shutil
@@ -483,6 +511,32 @@ class GeminiAutomationUC:
                     shutil.rmtree(self.user_data_dir, ignore_errors=True)
             except Exception:
                 pass
+
+    def _kill_browser_process(self, pid: int = None) -> None:
+        """强制清理当前进程下的所有浏览器子进程"""
+        try:
+            # 不再依赖传入的 PID，而是扫描当前 Python 进程的所有子进程
+            import psutil
+            current_proc = psutil.Process()
+            children = current_proc.children(recursive=True)
+            
+            for child in children:
+                try:
+                    name = child.name().lower()
+                    # 匹配 chrome, chromium, google-chrome 等
+                    if "chrom" in name or "google-chrome" in name:
+                        self._log("info", f"🔪 发现残留进程，强制清理 (UC): PID={child.pid} Name={name}")
+                        child.kill()
+                        try:
+                            # 必须调用 wait() 来回收僵尸进程
+                            child.wait(timeout=2)
+                        except psutil.TimeoutExpired:
+                            pass
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+                    
+        except Exception as e:
+            self._log("warning", f"⚠️ 进程清理异常 (UC): {e}")
 
     def _log(self, level: str, message: str) -> None:
         """记录日志"""
