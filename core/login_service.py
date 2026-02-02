@@ -104,6 +104,7 @@ class LoginService(BaseTaskService[LoginTask]):
         self._append_log(task, "info", f"🚀 刷新任务已启动 (共 {len(task.account_ids)} 个账号)")
         accounts_data = load_accounts_from_source()
         updated_accounts = False
+        refreshed_configs: Dict[str, Dict[str, Any]] = {}
         cancelled_early = False
 
         try:
@@ -142,6 +143,7 @@ class LoginService(BaseTaskService[LoginTask]):
                     task.success_count += 1
                     updated_config = result.get("config") or {}
                     if updated_config:
+                        refreshed_configs[account_id] = updated_config
                         for acc in accounts_data:
                             if acc.get("id") == account_id:
                                 acc.update(updated_config)
@@ -159,7 +161,13 @@ class LoginService(BaseTaskService[LoginTask]):
                     self._append_log(task, "error", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         finally:
             if updated_accounts:
-                self._apply_accounts_update(accounts_data)
+                latest_accounts = load_accounts_from_source()
+                if refreshed_configs:
+                    for acc in latest_accounts:
+                        account_id = acc.get("id")
+                        if account_id in refreshed_configs:
+                            acc.update(refreshed_configs[account_id])
+                self._apply_accounts_update(latest_accounts)
 
         if task.cancel_requested or cancelled_early:
             task.status = TaskStatus.CANCELLED
