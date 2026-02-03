@@ -1,47 +1,57 @@
 ﻿<template>
-  <div class="space-y-8">
-    <section class="grid grid-cols-2 gap-4 md:grid-cols-2 xl:grid-cols-4">
+  <div class="space-y-6">
+    <!-- 统计卡片：纸张质感 -->
+    <section class="grid grid-cols-2 gap-4 md:grid-cols-4">
       <div
         v-for="stat in stats"
         :key="stat.label"
-        class="rounded-3xl border border-border bg-card p-6"
+        class="group relative overflow-hidden rounded-xl border border-slate-200 bg-white p-6 shadow-sm transition-all hover:shadow-md active:scale-[0.98]"
       >
-        <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">{{ stat.label }}</p>
-        <p class="mt-4 text-3xl font-semibold text-foreground">{{ stat.value }}</p>
-        <p class="mt-2 text-xs text-muted-foreground">{{ stat.caption }}</p>
+        <div class="absolute top-0 left-0 h-1 w-0 bg-indigo-500 transition-all group-hover:w-full"></div>
+        <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">{{ stat.label }}</p>
+        <p class="mt-4 text-3xl font-black tracking-tight text-slate-800">{{ stat.value }}</p>
+        <p class="mt-2 text-[10px] font-medium text-slate-400 line-clamp-1">{{ stat.caption }}</p>
       </div>
     </section>
 
-    <section class="dashboard-split flex w-full flex-col gap-6">
-      <div class="dashboard-main w-full min-w-0 rounded-3xl border border-border bg-card p-6 overflow-hidden">
-        <div class="flex items-center justify-between">
-          <p class="text-sm font-medium text-foreground">调用趋势（近12小时）</p>
+    <!-- 图表区域：布局优化 -->
+    <section class="flex w-full flex-col gap-6 lg:flex-row">
+      <div class="flex-1 min-w-0 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div class="flex items-center justify-between border-b border-slate-50 pb-4">
+          <p class="text-sm font-bold tracking-tight text-slate-700">调用趋势 (近12小时)</p>
+          <div class="flex items-center gap-2">
+            <span class="h-2 w-2 rounded-full bg-indigo-500"></span>
+            <span class="text-[10px] font-bold text-slate-400 uppercase">Trend Analysis</span>
+          </div>
         </div>
-        <div ref="trendChartRef" class="mt-6 h-64 w-full max-w-full lg:h-72"></div>
-        <div class="mt-4 border-t border-border pt-4">
-          <p class="text-sm font-medium text-foreground">模型调用分布（近12小时）</p>
-          <div ref="modelChartRef" class="mt-4 h-80 w-full max-w-full lg:h-64"></div>
+        <div ref="trendChartRef" class="mt-6 h-64 w-full lg:h-72"></div>
+        
+        <div class="mt-8 border-t border-slate-50 pt-6">
+          <p class="text-sm font-bold tracking-tight text-slate-700">模型调用分布</p>
+          <div ref="modelChartRef" class="mt-6 h-80 w-full lg:h-64"></div>
         </div>
       </div>
 
-      <div class="dashboard-side w-full min-w-0 rounded-3xl border border-border bg-card p-6">
-        <p class="text-sm font-medium text-foreground">账号健康</p>
-        <div class="mt-6 space-y-4">
+      <div class="w-full lg:w-80 shrink-0 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <p class="text-sm font-bold tracking-tight text-slate-700 border-b border-slate-50 pb-4">账号健康程度</p>
+        <div class="mt-6 space-y-5">
           <div v-for="item in accountBreakdown" :key="item.label" class="space-y-2">
-            <div class="flex items-center justify-between text-sm">
-              <span class="flex items-center gap-2 text-muted-foreground">
+            <div class="flex items-center justify-between">
+              <span class="flex items-center gap-2 text-[11px] font-bold text-slate-400 uppercase">
                 {{ item.label }}
                 <HelpTip v-if="item.tooltip" :text="item.tooltip" />
               </span>
-              <span class="font-medium text-foreground">{{ item.value }}</span>
+              <span class="text-xs font-black text-slate-700">{{ item.value }}</span>
             </div>
-            <div class="h-2 w-full rounded-full bg-secondary">
-              <div class="h-2 rounded-full" :class="item.barClass" :style="{ width: item.percent + '%' }"></div>
+            <div class="h-1.5 w-full rounded-full bg-slate-50 overflow-hidden">
+              <div class="h-full rounded-full transition-all duration-1000" :class="item.barClass" :style="{ width: item.percent + '%' }"></div>
             </div>
           </div>
         </div>
-        <div class="mt-6 rounded-2xl border border-border bg-secondary/50 p-4 text-xs text-muted-foreground">
-          建议及时处理失败或过期账号，避免影响轮询效率。
+        <div class="mt-8 rounded-xl bg-indigo-50/50 p-4 border border-indigo-100/50">
+          <p class="text-[10px] font-bold leading-relaxed text-indigo-600/80 uppercase tracking-wider">
+            Smart Advice: 建议及时处理异常账号，确保持续可用性。
+          </p>
         </div>
       </div>
     </section>
@@ -89,26 +99,26 @@ const accountBreakdown = computed(() => {
       label: '活跃',
       value: active,
       percent: Math.round((active / total) * 100),
-      barClass: 'bg-emerald-500',
+      barClass: 'bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.3)]',
     },
     {
       label: '失败',
       value: failed,
       percent: Math.round((failed / total) * 100),
-      barClass: 'bg-destructive',
+      barClass: 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.3)]',
     },
     {
       label: '限流',
       value: rateLimited,
       percent: Math.round((rateLimited / total) * 100),
-      barClass: 'bg-amber-300',
+      barClass: 'bg-amber-400',
     },
     {
       label: '空闲',
       tooltip: '未限流、未失败、未激活使用中的账号（主要是手动禁用）。',
       value: available,
       percent: Math.round((available / total) * 100),
-      barClass: 'bg-slate-300',
+      barClass: 'bg-slate-200',
     },
   ]
 })
@@ -153,9 +163,9 @@ function initModelChart() {
 function updateTrendChart() {
   if (!trendChart) return
 
-  const successColor = '#0ea5e9'
+  const successColor = '#6366f1' // Indigo
   const failureColor = '#f59e0b'
-  const failureLineColor = '#ef4444'
+  const failureLineColor = '#f43f5e' // Rose
 
   trendChart.setOption({
     tooltip: { trigger: 'axis' },
@@ -254,7 +264,12 @@ function updateModelChart() {
       formatter: (params: { name: string; value: number; percent: number }) =>
         `${params.name}: ${params.value} 次 (${params.percent}%)`,
     },
-    legend: legendConfig,
+    legend: {
+      ...legendConfig,
+      itemWidth: 10,
+      itemHeight: 10,
+      textStyle: { color: '#94a3b8', fontSize: 10, fontWeight: 'bold' },
+    },
     series: [
       {
         type: 'pie',
@@ -265,8 +280,8 @@ function updateModelChart() {
         animationEasing: 'cubicOut',
         avoidLabelOverlap: true,
         label: { show: true, formatter: '{b}', fontSize: 11, color: '#6b6b6b' },
-        labelLine: { length: 12, length2: 10 },
-        itemStyle: { borderWidth: 2, borderColor: '#fff', borderRadius: 10 },
+        labelLine: { length: 15, length2: 12, lineStyle: { color: '#e2e8f0' } },
+        itemStyle: { borderWidth: 4, borderColor: '#fff' },
         data: modelTotals,
       },
     ],
@@ -325,11 +340,11 @@ function scheduleModelResize() {
 
 function getModelColor(model: string) {
   const modelColors: Record<string, string> = {
-    'gemini-3-pro-preview': '#0ea5e9',
-    'gemini-2.5-pro': '#22c55e',
-    'gemini-2.5-flash': '#f59e0b',
-    'gemini-3-flash-preview': '#ec4899',
-    'gemini-auto': '#64748b',
+    'gemini-3-pro-preview': '#6366f1',
+    'gemini-2.5-pro': '#06b6d4',
+    'gemini-2.5-flash': '#8b5cf6',
+    'gemini-3-flash-preview': '#f43f5e',
+    'gemini-auto': '#94a3b8',
   }
   return modelColors[model] || '#94a3b8'
 }

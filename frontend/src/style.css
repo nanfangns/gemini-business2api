@@ -6,32 +6,40 @@
 
 @layer base {
   :root {
-    --background: 0 0% 97%;
-    --foreground: 0 0% 10%;
+    /* 纸张质感调色盘 */
+    --background: 210 40% 98%;
+    /* 极淡的灰蓝底色 #f8fafc */
+    --foreground: 222 47% 11%;
 
     --card: 0 0% 100%;
-    --card-foreground: 0 0% 10%;
+    /* 纯白纸张卡片 */
+    --card-foreground: 222 47% 11%;
 
-    --primary: 0 0% 10%;
-    --primary-foreground: 0 0% 100%;
+    --primary: 243 75% 59%;
+    /* 活力紫 #6366f1 */
+    --primary-foreground: 210 40% 98%;
 
-    --secondary: 0 0% 92%;
-    --secondary-foreground: 0 0% 10%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
 
-    --muted: 0 0% 92%;
-    --muted-foreground: 0 0% 40%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
 
-    --accent: 0 0% 90%;
-    --accent-foreground: 0 0% 10%;
+    --accent: 188 91% 40%;
+    /* 辅色：清爽青 #06b6d4 */
+    --accent-foreground: 210 40% 98%;
 
-    --destructive: 0 70% 45%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
 
-    --border: 0 0% 86%;
-    --input: 0 0% 86%;
-    --ring: 0 0% 10%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 243 75% 59%;
 
-    --radius: 1rem;
+    --radius: 0.6rem;
+    /* 克制的 9.6px 圆角 */
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --shadow-paper: 0 2px 8px -1px rgb(0 0 0 / 0.03), 0 1px 4px -2px rgb(0 0 0 / 0.02);
   }
 }
 
@@ -39,6 +47,7 @@
   * {
     @apply border-border;
   }
+
   body {
     @apply bg-background text-foreground;
     font-family: "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
@@ -47,20 +56,8 @@
     margin: 0;
     padding: 0;
     overflow-x: hidden;
-    background-image:
-      radial-gradient(900px circle at 10% -20%, rgba(0, 0, 0, 0.04), transparent 45%),
-      radial-gradient(700px circle at 90% 0%, rgba(0, 0, 0, 0.05), transparent 40%),
-      linear-gradient(180deg, hsl(var(--background)) 0%, hsl(var(--background)) 100%);
-  }
-
-  body::before {
-    content: "";
-    position: fixed;
-    inset: 0;
-    background-image: linear-gradient(120deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0));
-    opacity: 0.5;
-    pointer-events: none;
-    z-index: -1;
+    /* 移除背景渐变，保持纯净纸感 */
+    background-color: hsl(var(--background));
   }
 
   h1,
@@ -135,10 +132,51 @@ html {
 }
 
 .monitor-card {
-  border-radius: 16px;
+  border-radius: var(--radius);
   padding: 0;
   background: hsl(var(--card));
-  box-shadow: none;
+  box-shadow: var(--shadow-paper);
+}
+
+/* 顶部加载条 */
+.loading-bar-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 1000;
+  pointer-events: none;
+  background: transparent;
+}
+
+.loading-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(to r, hsl(var(--primary)), hsl(var(--accent)));
+  box-shadow: 0 0 10px hsla(var(--primary), 0.5);
+  transition: width 0.3s ease;
+}
+
+.loading-bar.active {
+  animation: loading-bar-move 2s infinite ease-in-out;
+}
+
+@keyframes loading-bar-move {
+  0% {
+    width: 0%;
+    left: 0;
+  }
+
+  50% {
+    width: 70%;
+    left: 15%;
+  }
+
+  100% {
+    width: 100%;
+    left: 0;
+  }
 }
 
 .monitor-card__header {
@@ -296,21 +334,26 @@ html {
   0% {
     transform: translateY(0);
   }
+
   25% {
     transform: translateY(6px);
   }
+
   50% {
     transform: translateY(0);
   }
+
   75% {
     transform: translateY(-6px);
   }
+
   100% {
     transform: translateY(0);
   }
 }
 
 @keyframes logo-blink {
+
   0%,
   45%,
   55%,
@@ -318,25 +361,18 @@ html {
     transform: scaleY(1);
     opacity: 1;
   }
+
   50% {
     transform: scaleY(0.1);
     opacity: 0.6;
   }
 }
 
-.logo-mark .logo-cat-wrapper {
-  animation: logo-float 4s ease-in-out infinite;
-  transform-origin: center;
-}
-
+/* Logo Mark Styles */
 .logo-mark {
-  transform: translateY(2px);
+  transition: transform 0.3s ease;
 }
 
-.logo-mark .logo-eye {
-  fill: #00bcd4;
-  filter: drop-shadow(0 0 2px #00bcd4);
-  animation: logo-blink 5s infinite;
-  transform-box: fill-box;
-  transform-origin: center;
+.logo-mark:hover {
+  transform: scale(1.05);
 }

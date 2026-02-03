@@ -1,5 +1,9 @@
 ﻿<template>
   <div class="min-h-screen">
+    <!-- 顶部全自动加载条 -->
+    <div class="loading-bar-container">
+      <div class="loading-bar" :class="{ 'active': isLoading }"></div>
+    </div>
     <div class="flex min-h-screen flex-col lg:flex-row">
       <div
         v-if="isSidebarOpen"
@@ -7,11 +11,11 @@
         @click="isSidebarOpen = false"
       ></div>
       <aside
-        class="fixed inset-y-0 left-0 z-40 w-72 -translate-x-full bg-card/90 backdrop-blur-sm lg:backdrop-blur-none border-r border-border
-               transition-[width,transform] duration-200 ease-out will-change-[transform] transform-gpu flex flex-col lg:static lg:translate-x-0 lg:bg-card/80
-               lg:border-b-0 lg:border-r lg:sticky lg:top-0 lg:h-screen"
+        class="fixed inset-y-0 left-0 z-40 w-72 -translate-x-full bg-white border-r border-slate-200
+               transition-[width,transform] duration-300 ease-in-out will-change-[transform] transform-gpu flex flex-col lg:static lg:translate-x-0
+               lg:border-r lg:sticky lg:top-0 lg:h-screen shadow-sm"
         :class="[
-          { 'translate-x-0': isSidebarOpen, 'w-20 lg:w-20': isSidebarCollapsed },
+          { 'translate-x-0': isSidebarOpen, 'w-24 lg:w-24': isSidebarCollapsed },
         ]"
       >
         <div
@@ -35,7 +39,7 @@
                 <path d="M12 2C6.477 2 2 6.477 2 12c0 4.419 2.865 8.166 6.839 9.489.5.09.682-.217.682-.483 0-.237-.009-.868-.014-1.703-2.782.604-3.369-1.341-3.369-1.341-.454-1.154-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.004.071 1.532 1.031 1.532 1.031.892 1.529 2.341 1.087 2.91.832.091-.647.349-1.087.636-1.337-2.22-.253-4.555-1.11-4.555-4.944 0-1.092.39-1.987 1.029-2.687-.103-.253-.446-1.272.098-2.65 0 0 .84-.269 2.75 1.026A9.564 9.564 0 0 1 12 6.844c.85.004 1.705.115 2.504.337 1.909-1.295 2.748-1.026 2.748-1.026.546 1.378.202 2.397.1 2.65.64.7 1.028 1.595 1.028 2.687 0 3.842-2.338 4.687-4.566 4.936.359.309.678.919.678 1.852 0 1.337-.012 2.418-.012 2.747 0 .268.18.577.688.479A10.002 10.002 0 0 0 22 12c0-5.523-4.477-10-10-10z" />
               </svg>
             </a>
-            <span v-if="!isSidebarCollapsed" class="text-base font-semibold text-foreground">Gemini Business2API</span>
+            <span v-if="!isSidebarCollapsed" class="text-base font-bold tracking-tight text-slate-800">Gemini Business</span>
           </div>
         </div>
 
@@ -122,8 +126,8 @@
         </div>
       </aside>
 
-      <main class="min-w-0 flex-1 overflow-hidden lg:ml-0">
-        <header class="min-w-0 flex flex-col gap-4 border-b border-border bg-card/70 px-6 py-5 backdrop-blur lg:flex-row lg:items-center lg:justify-between lg:px-10">
+      <main class="min-w-0 flex-1 overflow-hidden lg:ml-0 bg-[#f8fafc]">
+        <header class="min-w-0 flex flex-col gap-4 border-b border-slate-200 bg-white/80 px-6 py-5 backdrop-blur-md lg:flex-row lg:items-center lg:justify-between lg:px-10">
           <div class="flex items-center gap-3">
             <button
               class="inline-flex h-10 w-10 items-center justify-center rounded-full border border-border text-foreground transition-colors
@@ -135,34 +139,11 @@
                 <path d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z" />
               </svg>
             </button>
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 130 150"
-              class="logo-mark h-9 w-9 shrink-0 text-foreground"
-            >
-              <defs>
-                <filter id="head-shadow" x="-50%" y="-50%" width="200%" height="200%">
-                  <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="rgba(0, 188, 212, 0.2)"/>
-                </filter>
-              </defs>
-              <g class="logo-cat-wrapper" transform="translate(0, 12)">
-                <g transform="translate(16, 20) rotate(-10, 9, 12)">
-                  <path d="M14 0 L18 24 L0 24 Z" fill="#2c3e50" />
-                </g>
-                <g transform="translate(96, 20) rotate(10, 9, 12)">
-                  <path d="M4 0 L18 24 L0 24 Z" fill="#2c3e50" />
-                </g>
-                <g filter="url(#head-shadow)">
-                  <path d="M 32 40 L 98 40 A 12 12 0 0 1 110 52 L 110 90 A 30 30 0 0 1 80 120 L 50 120 A 30 30 0 0 1 20 90 L 20 52 A 12 12 0 0 1 32 40 Z"
-                    fill="rgba(255, 255, 255, 0.9)"
-                    stroke="#2c3e50"
-                    stroke-width="3"
-                  />
-                </g>
-                <rect class="logo-eye" x="35" y="68" width="14" height="4" rx="1" />
-                <rect class="logo-eye" x="81" y="68" width="14" height="4" rx="1" />
-              </g>
-            </svg>
+            <img
+              src="/logo.svg"
+              alt="Logo"
+              class="logo-mark h-9 w-9 shrink-0 object-contain"
+            />
             <h2 class="text-xl font-semibold text-foreground lg:text-2xl">
               {{ currentPageTitle }}
             </h2>
@@ -202,7 +183,7 @@
           </div>
         </header>
 
-        <div class="h-full overflow-y-auto overflow-x-hidden bg-card/70 px-4 pb-10 pt-6 backdrop-blur lg:px-10 lg:pt-10">
+        <div class="h-full overflow-y-auto overflow-x-hidden px-4 pb-10 pt-6 lg:px-10 lg:pt-10">
           <RouterView />
         </div>
       </main>
@@ -338,6 +319,15 @@ const isSidebarOpen = ref(false)
 const isSidebarCollapsed = ref(false)
 const confirmDialog = useConfirmDialog()
 const isApiInfoOpen = ref(false)
+const isLoading = ref(false) // 全局加载状态
+
+// 模拟页面切换加载条效果
+watch(() => route.path, () => {
+  isLoading.value = true
+  setTimeout(() => {
+    isLoading.value = false
+  }, 800)
+})
 
 const menuItems = [
   {

@@ -1,53 +1,83 @@
-<svg width="130" height="150" viewBox="0 0 130 150" xmlns="http://www.w3.org/2000/svg">
+<svg width="140" height="140" viewBox="0 0 140 140" xmlns="http://www.w3.org/2000/svg">
   <defs>
+    <!-- 高级渐变：极光青到幻影蓝 -->
+    <linearGradient id="orbitGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00f2fe;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#4facfe;stop-opacity:1" />
+    </linearGradient>
+    
+    <radialGradient id="coreGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#00f2fe;stop-opacity:0.4" />
+      <stop offset="100%" style="stop-color:#00f2fe;stop-opacity:0" />
+    </radialGradient>
+
+    <filter id="ultraGlow">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
     <style>
-      :root {
-        --primary-ink: #2c3e50;
-        --soul-color: #00bcd4;
+      @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@900&amp;display=swap');
+      
+      .main-shell {
+        animation: float 5s ease-in-out infinite;
       }
-      .logo-cat-wrapper {
-        animation: logo-float 4s ease-in-out infinite;
-        transform-origin: center;
+      
+      .orbit-group {
+        transform-origin: 70px 70px;
+        animation: rotate 12s linear infinite;
       }
-      .logo-eye {
-        fill: var(--soul-color);
-        filter: drop-shadow(0 0 2px var(--soul-color));
-        animation: logo-blink 5s infinite;
-        transform-box: fill-box;
-        transform-origin: center;
+      
+      .gemini-arc {
+        fill: none;
+        stroke: url(#orbitGrad);
+        stroke-width: 8;
+        stroke-linecap: round;
+        filter: url(#ultraGlow);
+        stroke-dasharray: 100 50;
+        animation: pulse 2.5s ease-in-out infinite;
       }
-      @keyframes logo-float {
-        0% { transform: translateY(0); }
-        25% { transform: translateY(6px); }
-        50% { transform: translateY(0); }
-        75% { transform: translateY(-6px); }
-        100% { transform: translateY(0); }
+
+      .text-n {
+        font-family: 'Outfit', sans-serif;
+        font-weight: 900;
+        font-size: 42px;
+        fill: #0f172a;
+        filter: drop-shadow(0 0 8px rgba(0, 242, 254, 0.3));
       }
-      @keyframes logo-blink {
-        0%, 45%, 55%, 100% { transform: scaleY(1); opacity: 1; }
-        50% { transform: scaleY(0.1); opacity: 0.6; }
+
+      @keyframes float {
+        0%, 100% { transform: translateY(0px); }
+        50% { transform: translateY(-10px); }
+      }
+      
+      @keyframes rotate {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+      
+      @keyframes pulse {
+        0%, 100% { opacity: 0.7; stroke-dashoffset: 0; }
+        50% { opacity: 1; stroke-dashoffset: 20; }
       }
     </style>
-    <filter id="head-shadow" x="-50%" y="-50%" width="200%" height="200%">
-      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="rgba(0, 188, 212, 0.2)"/>
-    </filter>
   </defs>
 
-  <g class="logo-cat-wrapper" transform="translate(0, 12)">
-    <g transform="translate(16, 20) rotate(-10, 9, 12)">
-      <path d="M14 0 L18 24 L0 24 Z" fill="#2c3e50" />
+  <!-- 全局发光背景 -->
+  <circle cx="70" cy="70" r="60" fill="url(#coreGlow)" />
+
+  <g class="main-shell">
+    <!-- 扩大后的圆环组 -->
+    <g class="orbit-group">
+      <!-- 更加粗壮的弧线 -->
+      <path d="M 30 70 A 40 40 0 0 1 110 70" class="gemini-arc" />
+      <path d="M 30 70 A 40 40 0 0 0 110 70" class="gemini-arc" opacity="0.5" style="animation-delay: 1.25s" />
+      
+      <!-- 轨道上的发光核心 -->
+      <circle cx="110" cy="70" r="6" fill="#00f2fe" filter="url(#ultraGlow)" />
     </g>
-    <g transform="translate(96, 20) rotate(10, 9, 12)">
-      <path d="M4 0 L18 24 L0 24 Z" fill="#2c3e50" />
-    </g>
-    <g filter="url(#head-shadow)">
-      <path d="M 32 40 L 98 40 A 12 12 0 0 1 110 52 L 110 90 A 30 30 0 0 1 80 120 L 50 120 A 30 30 0 0 1 20 90 L 20 52 A 12 12 0 0 1 32 40 Z"
-        fill="rgba(255, 255, 255, 0.9)"
-        stroke="#2c3e50"
-        stroke-width="3"
-      />
-    </g>
-    <rect class="logo-eye" x="35" y="68" width="14" height="4" rx="1" />
-    <rect class="logo-eye" x="81" y="68" width="14" height="4" rx="1" />
+
+    <!-- 中心巨大的 N 标志 -->
+    <text x="70" y="85" text-anchor="middle" class="text-n">N</text>
   </g>
 </svg>

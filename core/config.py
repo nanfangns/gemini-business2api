@@ -296,6 +296,13 @@ class ConfigManager:
             register_domain=str(register_domain_raw or "").strip(),
         )
 
+        # [新增] 环境区分：如果设置了 LOCAL_IGNORE_PROXY，强制忽略账户和邮箱代理
+        local_ignore = _parse_bool(os.getenv("LOCAL_IGNORE_PROXY"), False)
+        if local_ignore:
+            print("[CONFIG] 🚀 检测到 LOCAL_IGNORE_PROXY=1，已强制忽略账户/邮箱代理设置")
+            basic_config.proxy_for_auth = ""
+            basic_config.mail_proxy_enabled = False
+
         # 4. 加载其他配置（从 YAML）
         image_generation_config = ImageGenerationConfig(
             **yaml_data.get("image_generation", {})
