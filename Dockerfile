@@ -20,7 +20,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TZ=Asia/Shanghai
 
 # 1. 核心系统依赖（最重且最稳定的部分，放在最前面以永久利用缓存）
-#    注意：gcc 只用于 pip install 编译阶段，装完 Python 包后删除
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     gcc \
@@ -36,10 +35,9 @@ RUN apt-get update && \
     ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
     rm -rf /var/lib/apt/lists/*
 
-# 2. Python 依赖安装（使用清华源加速 + 安装完后删除 gcc 节省空间）
+# 2. Python 依赖安装（使用清华源加速）
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && \
-    apt-get purge -y gcc && apt-get autoremove -y && rm -rf /tmp/* /var/tmp/*
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 3. 后端代码复制（变动较频繁的部分）
 COPY core ./core
@@ -49,8 +47,10 @@ COPY main.py .
 # 4. 从 builder 阶段复制静态文件
 COPY --from=frontend-builder /app/static ./static
 
-# 5. 准备启动
-RUN mkdir -p ./data
+# 5. 清理和准备启动
+RUN apt-get purge -y gcc && apt-get autoremove -y && rm -rf /tmp/* /var/tmp/* && \
+    mkdir -p ./data
+
 COPY entrypoint.sh .
 RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
 

@@ -11,7 +11,10 @@ from typing import Any, Callable, Dict, List, Optional
 from core.account import load_accounts_from_source
 from core.base_task_service import BaseTask, BaseTaskService, TaskCancelledError, TaskStatus
 from core.config import config
-from core.browser_worker import run_in_subprocess
+from core.mail_providers import create_temp_mail_client
+from core.gemini_automation import GeminiAutomation
+from core.gemini_automation_uc import GeminiAutomationUC
+from core.microsoft_mail_client import MicrosoftMailClient
 from core.outbound_proxy import OutboundProxyConfig
 
 logger = logging.getLogger("gemini.login")
@@ -187,16 +190,57 @@ class LoginService(BaseTaskService[LoginTask]):
         no_proxy = outbound.no_proxy if use_outbound_proxy else ""
         direct_fallback = outbound.direct_fallback if use_outbound_proxy else False
 
-        # 校验邮件配置（快速失败，避免浪费子进程资源）
+        # 创建邮件客户端
         if mail_provider == "microsoft":
             if not mail_client_id or not mail_refresh_token:
                 return {"success": False, "email": account_id, "error": "Microsoft OAuth 配置缺失"}
+            mail_address = account.get("mail_address") or account_id
+            client = MicrosoftMailClient(
+                client_id=mail_client_id,
+                refresh_token=mail_refresh_token,
+                tenant=mail_tenant,
+                proxy=proxy_url,
+                no_proxy=no_proxy,
+                direct_fallback=direct_fallback,
+                log_callback=log_cb,
+            )
+            client.set_credentials(mail_address)
         elif mail_provider in ("duckmail", "moemail", "freemail", "gptmail"):
             if mail_provider not in ("freemail", "gptmail") and not mail_password:
                 error_message = "邮箱密码缺失" if mail_provider == "duckmail" else "mail password (email_id) missing"
                 return {"success": False, "email": account_id, "error": error_message}
             if mail_provider == "freemail" and not account.get("mail_jwt_token") and not config.basic.freemail_jwt_token:
                 return {"success": False, "email": account_id, "error": "Freemail JWT Token 未配置"}
+
+            # 创建邮件客户端，优先使用账户级别配置
+            mail_address = account.get("mail_address") or account_id
+
+            # 构建账户级别的配置参数
+            account_config = {
+                "proxy": proxy_url,
+                "no_proxy": no_proxy,
+                "direct_fallback": direct_fallback,
+            }
+            if account.get("mail_base_url"):
+                account_config["base_url"] = account["mail_base_url"]
+            if account.get("mail_api_key"):
+                account_config["api_key"] = account["mail_api_key"]
+            if account.get("mail_jwt_token"):
+                account_config["jwt_token"] = account["mail_jwt_token"]
+            if account.get("mail_verify_ssl") is not None:
+                account_config["verify_ssl"] = account["mail_verify_ssl"]
+            if account.get("mail_domain"):
+                account_config["domain"] = account["mail_domain"]
+
+            # 创建客户端（工厂会优先使用传入的参数，其次使用全局配置）
+            client = create_temp_mail_client(
+                mail_provider,
+                log_cb=log_cb,
+                **account_config
+            )
+            client.set_credentials(mail_address, mail_password)
+            if mail_provider == "moemail":
+                client.email_id = mail_password  # 设置 email_id 用于获取邮件
         else:
             return {"success": False, "email": account_id, "error": f"不支持的邮件提供商: {mail_provider}"}
 
@@ -208,49 +252,35 @@ class LoginService(BaseTaskService[LoginTask]):
         from core.proxy_utils import parse_proxy_setting
         browser_proxy = proxy_url if proxy_url else parse_proxy_setting(config.basic.proxy_for_auth)[0]
 
-        # 构建子进程任务参数（所有值必须可 pickle 序列化）
-        task_params = {
-            "action": "login",
-            "email": account_id,
-            "browser_engine": browser_engine,
-            "headless": headless,
-            "proxy": browser_proxy or "",
-            "user_agent": self.user_agent,
-            "mail_provider": mail_provider,
-            "mail_config": {
-                "mail_address": account.get("mail_address") or account_id,
-                "mail_password": mail_password or "",
-                "proxy": proxy_url,
-                "no_proxy": no_proxy,
-                "direct_fallback": direct_fallback,
-            },
-        }
-        # 补充各提供商特有的邮件配置
-        mc = task_params["mail_config"]
-        if mail_provider == "microsoft":
-            mc["client_id"] = mail_client_id or ""
-            mc["refresh_token"] = mail_refresh_token or ""
-            mc["tenant"] = mail_tenant
-        else:
-            # 临时邮箱提供商：传递账户级别配置
-            if account.get("mail_base_url"):
-                mc["base_url"] = account["mail_base_url"]
-            if account.get("mail_api_key"):
-                mc["api_key"] = account["mail_api_key"]
-            if account.get("mail_jwt_token"):
-                mc["jwt_token"] = account["mail_jwt_token"]
-            if account.get("mail_verify_ssl") is not None:
-                mc["verify_ssl"] = account["mail_verify_ssl"]
-            if account.get("mail_domain"):
-                mc["domain"] = account["mail_domain"]
+        log_cb("info", f"🌐 启动浏览器 (引擎={browser_engine}, 无头模式={headless}, 代理={browser_proxy or '无'})...")
 
-        # 在独立子进程中执行浏览器自动化（子进程退出后 OS 回收全部内存）
-        result = run_in_subprocess(
-            task_params,
-            log_callback=log_cb,
-            timeout=300,
-            cancel_check=lambda: task.cancel_requested,
-        )
+        if browser_engine == "dp":
+            # DrissionPage 引擎：支持有头和无头模式
+            automation = GeminiAutomation(
+                user_agent=self.user_agent,
+                proxy=browser_proxy,
+                headless=headless,
+                log_callback=log_cb,
+            )
+        else:
+            # undetected-chromedriver 引擎：无头模式反检测能力弱，强制使用有头模式
+            if headless:
+                log_cb("warning", "⚠️ UC 引擎无头模式反检测能力弱，强制使用有头模式")
+                headless = False
+            automation = GeminiAutomationUC(
+                user_agent=self.user_agent,
+                proxy=browser_proxy,
+                headless=headless,
+                log_callback=log_cb,
+            )
+        # 允许外部取消时立刻关闭浏览器
+        self._add_cancel_hook(task.id, lambda: getattr(automation, "stop", lambda: None)())
+        try:
+            log_cb("info", "🔐 执行 Gemini 自动登录...")
+            result = automation.login_and_extract(account_id, client)
+        except Exception as exc:
+            log_cb("error", f"❌ 自动登录异常: {exc}")
+            return {"success": False, "email": account_id, "error": str(exc)}
         if not result.get("success"):
             error = result.get("error", "自动化流程失败")
             log_cb("error", f"❌ 自动登录失败: {error}")
