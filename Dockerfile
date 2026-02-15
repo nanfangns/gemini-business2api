@@ -5,7 +5,7 @@ WORKDIR /app/frontend
 # 使用国内镜像加速 npm install
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm config set registry https://registry.npmmirror.com && \
-    npm ci --silent
+    npm install --silent
 
 # 复制前端源码并构建
 COPY frontend/ ./
