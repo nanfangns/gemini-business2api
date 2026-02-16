@@ -9,7 +9,7 @@ import requests
 from requests import Response
 
 from core.mail_utils import extract_verification_code
-from core.proxy_utils import request_with_proxy_fallback
+from core.proxy_utils import no_proxy_matches, request_with_proxy_fallback
 
 
 class DuckMailClient:
