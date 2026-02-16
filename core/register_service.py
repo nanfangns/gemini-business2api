@@ -236,6 +236,12 @@ class RegisterService(BaseTaskService[RegisterTask]):
         config_data["mail_provider"] = temp_mail_provider
         config_data["mail_address"] = client.email
 
+        # 设置账号有效期（30天）
+        from datetime import datetime, timedelta, timezone
+        beijing_tz = timezone(timedelta(hours=8))
+        acc_expires_at = (datetime.now(beijing_tz) + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        config_data["account_expires_at"] = acc_expires_at
+
         # 保存邮箱自定义配置
         if temp_mail_provider == "freemail":
             config_data["mail_password"] = ""

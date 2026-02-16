@@ -29,6 +29,8 @@ export interface AdminAccount {
   cooldown_reason: string | null
   conversation_count: number
   quota_status: AccountQuotaStatus
+  account_expires_at?: string
+  account_remaining_days?: number | null
 }
 
 export interface AccountsListResponse {
@@ -53,6 +55,7 @@ export interface AccountConfigItem {
   mail_jwt_token?: string
   mail_verify_ssl?: boolean
   mail_domain?: string
+  account_expires_at?: string
 }
 
 export interface AccountsConfigResponse {

@@ -270,6 +270,15 @@
               </p>
             </div>
             <div>
+              <p>账号有效期</p>
+              <p class="mt-1 text-sm font-semibold" :class="accountRemainingClass(account)">
+                {{ displayAccountRemaining(account) }}
+              </p>
+              <p v-if="account.account_expires_at && account.account_expires_at !== '永久'" class="mt-1 text-[11px] text-muted-foreground">
+                {{ account.account_expires_at }}
+              </p>
+            </div>
+            <div>
               <p>配额</p>
               <div class="mt-1">
                 <QuotaBadge v-if="account.quota_status" :quota-status="account.quota_status" />
@@ -357,6 +366,12 @@
               <th class="py-3 pr-6">冷却</th>
               <th class="py-3 pr-6">失败数</th>
               <th class="py-3 pr-6">会话数</th>
+              <th class="py-3 pr-6">
+                <span class="inline-flex items-center gap-2">
+                  账号有效期
+                  <HelpTip text="账号自注册后有效期通常为 30 天。" />
+                </span>
+              </th>
               <th class="py-3 text-right">操作</th>
             </tr>
           </thead>
@@ -415,6 +430,14 @@
               </td>
               <td class="py-4 pr-6 text-xs text-muted-foreground">
                 {{ account.conversation_count }}
+              </td>
+              <td class="py-4 pr-6">
+                <div class="text-sm font-semibold" :class="accountRemainingClass(account)">
+                  {{ displayAccountRemaining(account) }}
+                </div>
+                <span v-if="account.account_expires_at && account.account_expires_at !== '永久'" class="block text-[11px] text-muted-foreground">
+                  {{ account.account_expires_at }}
+                </span>
               </td>
               <td class="py-4 text-right">
                 <div class="flex flex-wrap justify-end gap-2">
@@ -1069,6 +1092,7 @@ const editForm = ref<AccountConfigItem>({
   config_id: '',
   host_c_oses: '',
   expires_at: '',
+  account_expires_at: '',
 })
 const editIndex = ref<number | null>(null)
 const configAccounts = ref<AccountConfigItem[]>([])
@@ -1112,6 +1136,20 @@ const refreshAccounts = async () => {
   await accountsStore.loadAccounts()
   selectedIds.value = new Set()
   showMoreActions.value = false
+}
+
+const displayAccountRemaining = (account: AdminAccount) => {
+  if (account.account_expires_at === '永久') return '永久有效'
+  if (account.account_remaining_days === null || account.account_remaining_days === undefined) return '未知'
+  return `${account.account_remaining_days.toFixed(1)} 天`
+}
+
+const accountRemainingClass = (account: AdminAccount) => {
+  if (account.account_expires_at === '永久') return 'text-primary'
+  if (account.account_remaining_days === null || account.account_remaining_days === undefined) return 'text-muted-foreground'
+  if (account.account_remaining_days < 3) return 'text-destructive font-bold animate-pulse'
+  if (account.account_remaining_days < 7) return 'text-orange-500 font-medium'
+  return 'text-foreground'
 }
 
 // 加载自动刷新状态

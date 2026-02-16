@@ -1233,7 +1233,9 @@ async def admin_get_accounts(request: Request):
             "cooldown_reason": cooldown_reason,
             "conversation_count": account_manager.conversation_count,
             "session_usage_count": account_manager.session_usage_count,
-            "quota_status": quota_status  # 新增配额状态
+            "quota_status": quota_status,
+            "account_expires_at": config.account_expires_at or "永久",
+            "account_remaining_days": config.get_account_remaining_days()
         })
 
     return {"total": len(accounts_info), "accounts": accounts_info}

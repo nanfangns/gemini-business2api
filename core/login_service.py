@@ -331,7 +331,20 @@ class LoginService(BaseTaskService[LoginTask]):
 
 
     def _get_expiring_accounts(self) -> List[str]:
-        accounts = load_accounts_from_source()
+        # [OPTIMIZE] 优先使用内存中的账户列表，避免唤醒数据库
+        # accounts = load_accounts_from_source()
+        accounts = []
+        if self.multi_account_mgr and self.multi_account_mgr.accounts:
+            # 将 AccountManager 对象转换为字典格式以兼容现有逻辑
+            for acc_mgr in self.multi_account_mgr.accounts.values():
+                # 转换 config 对象为 dict
+                acc_dict = acc_mgr.config.__dict__.copy()
+                acc_dict["id"] = acc_mgr.config.account_id
+                accounts.append(acc_dict)
+        else:
+            # 只有内存为空时才降级查库（极少情况）
+            accounts = load_accounts_from_source() or []
+
         expiring = []
         beijing_tz = timezone(timedelta(hours=8))
         now = datetime.now(beijing_tz)
@@ -343,14 +356,19 @@ class LoginService(BaseTaskService[LoginTask]):
             account_id = account.get("id")
             if not account_id or account.get("disabled") or account_id in active_ids:
                 continue
+            
+            # 检查是否为支持自动刷新的账号类型
             mail_provider = (account.get("mail_provider") or "").lower()
             if not mail_provider:
+                # 尝试推断
                 if account.get("mail_client_id") or account.get("mail_refresh_token"):
                     mail_provider = "microsoft"
                 else:
                     mail_provider = "duckmail"
 
             mail_password = account.get("mail_password") or account.get("email_password")
+            
+            # 根据类型检查必要参数
             if mail_provider == "microsoft":
                 if not account.get("mail_client_id") or not account.get("mail_refresh_token"):
                     continue
@@ -361,17 +379,20 @@ class LoginService(BaseTaskService[LoginTask]):
                 if not config.basic.freemail_jwt_token:
                     continue
             elif mail_provider == "gptmail":
-                # GPTMail 不需要密码，允许直接刷新
                 pass
             else:
                 continue
+
             expires_at = account.get("expires_at")
             if not expires_at:
                 continue
 
             try:
                 expire_time = datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
-                expire_time = expire_time.replace(tzinfo=beijing_tz)
+                # 兼容不带时区的时间字符串（假设为北京时间）
+                if expire_time.tzinfo is None:
+                    expire_time = expire_time.replace(tzinfo=beijing_tz)
+                
                 remaining = (expire_time - now).total_seconds() / 3600
             except Exception:
                 continue

@@ -67,6 +67,7 @@ class AccountConfig:
     mail_verify_ssl: Optional[bool] = None
     mail_domain: Optional[str] = None
     mail_api_key: Optional[str] = None
+    account_expires_at: Optional[str] = None  # 账号过期时间 (格式: "2025-12-23 10:59:21")
 
     def get_remaining_hours(self) -> Optional[float]:
         """计算账户剩余小时数"""
@@ -84,6 +85,20 @@ class AccountConfig:
             # 计算剩余时间
             remaining = (expire_time - now).total_seconds() / 3600
             return remaining
+        except Exception:
+            return None
+
+    def get_account_remaining_days(self) -> Optional[float]:
+        """计算账号剩余有效期（天数）"""
+        if not self.account_expires_at:
+            return None
+        try:
+            beijing_tz = timezone(timedelta(hours=8))
+            expire_time = datetime.strptime(self.account_expires_at, "%Y-%m-%d %H:%M:%S")
+            expire_time = expire_time.replace(tzinfo=beijing_tz)
+            now = datetime.now(beijing_tz)
+            remaining_days = (expire_time - now).total_seconds() / 86400
+            return max(0, remaining_days)
         except Exception:
             return None
 
@@ -648,6 +663,7 @@ def load_multi_account_config(
             mail_client_id=acc.get("mail_client_id"),
             mail_refresh_token=acc.get("mail_refresh_token"),
             mail_tenant=acc.get("mail_tenant"),
+            account_expires_at=acc.get("account_expires_at"),
         )
 
         # 检查账户是否已过期（已过期也加载到管理面板）
