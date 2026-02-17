@@ -2002,19 +2002,25 @@ async def chat_impl(
                              last_user_content = part.get("text", "").strip()
                              break
 
-        # 指令处理
-        intercept_response_content = None
-        if last_user_content == "重置":
-            logger.info(f"[COMMAND] [req_{request_id}] 触发指令: 重置 (ChatID: {chat_id_for_binding})")
-            await binding_mgr.reset_session_binding(chat_id_for_binding)
-            await multi_account_mgr.clear_session_cache(chat_id_for_binding)
-            intercept_response_content = "✅ 记忆已重置，当前账号环境保留。"
+        # 指令处理 (增强版: 支持上下文污染的情况)
+        # 正则匹配最后出现的指令 (忽略标点符号)
+        command_pattern = r"(?:换号|重置|切换账号|Reset Session|Switch Account)[!！.。]*$"
+        match = re.search(command_pattern, last_user_content, re.IGNORECASE)
         
-        elif last_user_content == "换号":
-            logger.info(f"[COMMAND] [req_{request_id}] 触发指令: 换号 (ChatID: {chat_id_for_binding})")
-            await binding_mgr.remove_binding(chat_id_for_binding)
-            await multi_account_mgr.clear_session_cache(chat_id_for_binding)
-            intercept_response_content = "🔄 账号已切换，正在连接新分身..."
+        intercept_response_content = None
+        if match:
+            command = match.group().strip("!！.。")
+            if command in ["重置", "Reset Session"]:
+                logger.info(f"[COMMAND] [req_{request_id}] 触发指令: 重置 (ChatID: {chat_id_for_binding})")
+                await binding_mgr.reset_session_binding(chat_id_for_binding)
+                await multi_account_mgr.clear_session_cache(chat_id_for_binding)
+                intercept_response_content = "✅ 记忆已重置，当前账号环境保留。"
+            
+            elif command in ["换号", "切换账号", "Switch Account"]:
+                logger.info(f"[COMMAND] [req_{request_id}] 触发指令: 换号 (ChatID: {chat_id_for_binding})")
+                await binding_mgr.remove_binding(chat_id_for_binding)
+                await multi_account_mgr.clear_session_cache(chat_id_for_binding)
+                intercept_response_content = "🔄 账号已切换，正在连接新分身..."
 
         if intercept_response_content:
             # 构造响应 ID
@@ -2616,10 +2622,17 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
         except ValueError as e:
             uptime_tracker.record_request(model_name, False)
             logger.error(f"[API] [{account_manager.config.account_id}] [req_{request_id}] JSON解析失败: {str(e)}")
+            # 发送错误块给前端
+            error_chunk = create_chunk(chat_id, created_time, model_name, {"content": f"\n\n[System Error] Response parsing failed: {str(e)}"}, None)
+            yield f"data: {error_chunk}\n\n"
         except Exception as e:
             error_type = type(e).__name__
             uptime_tracker.record_request(model_name, False)
             logger.error(f"[API] [{account_manager.config.account_id}] [req_{request_id}] 流处理错误 ({error_type}): {str(e)}")
+            # 发送错误块给前端
+            error_chunk = create_chunk(chat_id, created_time, model_name, {"content": f"\n\n[System Error] Stream interrupted: {str(e)}"}, None)
+            yield f"data: {error_chunk}\n\n"
+            # 重新抛出异常以便上层记录
             raise
 
     # 在 async with 块外处理图片下载（避免占用上游连接）
