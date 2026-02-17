@@ -20,5 +20,7 @@ export MALLOC_ARENA_MAX=2
 export PORT=7860
 
 # 启动 Python 应用，强制指定端口为 7860
+# (注意：exec PORT=7860 ... 这种写法在某些 Shell 环境下兼容性不佳，改回标准写法)
 echo "[ENTRYPOINT] Starting Python application on port 7860..."
-exec PORT=7860 python -u main.py
+export PORT=7860
+exec python -u main.py
