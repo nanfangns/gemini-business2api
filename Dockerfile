@@ -54,7 +54,7 @@ RUN apt-get purge -y gcc && apt-get autoremove -y && rm -rf /tmp/* /var/tmp/* &&
 COPY entrypoint.sh .
 RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
 
-VOLUME ["/app/data"]
+
 EXPOSE 7860
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
