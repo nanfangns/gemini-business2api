@@ -172,9 +172,38 @@ def _read_stderr_logs(
 
 
 def _kill_proc(proc: subprocess.Popen) -> None:
-    """终止子进程。"""
+    """终止子进程（包括所有子孙进程）。"""
     try:
+        import psutil
+        
+        # 1. 获取父进程对象
+        try:
+            parent = psutil.Process(proc.pid)
+        except psutil.NoSuchProcess:
+            return
+
+        # 2. 获取所有子孙进程（需要在杀父进程之前获取）
+        children = parent.children(recursive=True)
+
+        # 3. 杀死所有子孙进程
+        for child in children:
+            try:
+                child.kill()
+            except psutil.NoSuchProcess:
+                pass
+
+        # 4. 杀死相关子孙进程后，等待其终结（避免僵尸进程）
+        psutil.wait_procs(children, timeout=3)
+
+        # 5. 最后杀死父进程（Python Wrapper）
         proc.kill()
         proc.wait(timeout=5)
-    except Exception:
-        pass
+
+    except Exception as e:
+        # 降级处理：直接尝试杀死父进程
+        logger.warning(f"[SUBPROCESS] 进程树清理失败 ({e})，尝试直接 Kill")
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+        except Exception:
+            pass

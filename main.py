@@ -2622,7 +2622,7 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
             download_tasks = []
             for file_info in file_ids:
                 fid = file_info["fileId"]
-                mime = file_info["mimeType"]
+            mime = file_info["mimeType"]
                 meta = file_metadata.get(fid, {})
                 # 优先使用 metadata 中的 MIME 类型
                 mime = meta.get("mimeType", mime)
