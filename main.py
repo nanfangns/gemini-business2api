@@ -586,6 +586,88 @@ def process_media(data: bytes, mime: str, chat_id: str, file_id: str, base_url: 
     else:
         return process_image(data, mime, chat_id, file_id, base_url, idx, request_id, account_id)
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    global global_stats
+    
+    # --- Startup ---
+    # 文件迁移逻辑
+    old_accounts = "accounts.json"
+    if os.path.exists(old_accounts) and not os.path.exists(ACCOUNTS_FILE):
+        try:
+            shutil.copy(old_accounts, ACCOUNTS_FILE)
+            logger.info(f"{logger_prefix} 已迁移 {old_accounts} -> {ACCOUNTS_FILE}")
+        except Exception as e:
+            logger.warning(f"{logger_prefix} 文件迁移失败: {e}")
+
+    # 加载统计数据
+    global_stats = await load_stats()
+    # 初始化统计数据默认值
+    for key in ["request_timestamps", "failure_timestamps", "rate_limit_timestamps", "recent_conversations"]:
+        global_stats.setdefault(key, [])
+    global_stats.setdefault("model_request_timestamps", {})
+    
+    # 修复旧数据格式
+    if isinstance(global_stats["request_timestamps"], dict):
+         global_stats["request_timestamps"] = []
+         
+    uptime_tracker.configure_storage(os.path.join(DATA_DIR, "uptime.json"))
+    uptime_tracker.load_heartbeats()
+    logger.info(f"[SYSTEM] 统计数据已加载: {global_stats.get('total_requests', 0)} 次请求, {global_stats.get('total_visitors', 0)} 位访客")
+
+    # 启动缓存清理任务
+    asyncio.create_task(multi_account_mgr.start_background_cleanup())
+    logger.info("[SYSTEM] 后台缓存清理任务已启动（间隔: 5分钟）")
+
+    # 启动自动刷新账号任务
+    if os.environ.get("ACCOUNTS_CONFIG"):
+        logger.info("[SYSTEM] 自动刷新账号已跳过（使用 ACCOUNTS_CONFIG）")
+    elif storage.is_database_enabled() and AUTO_REFRESH_ACCOUNTS_SECONDS > 0:
+        asyncio.create_task(auto_refresh_accounts_task())
+        logger.info(f"[SYSTEM] 自动刷新账号任务已启动（间隔: {AUTO_REFRESH_ACCOUNTS_SECONDS}秒）")
+    elif storage.is_database_enabled():
+        logger.info("[SYSTEM] 自动刷新账号功能已禁用（配置为0）")
+
+    # [OPTIMIZE] 彻底禁用统计数据上报数据库 (原逻辑保留在注释中)
+    
+    yield
+    
+    # --- Shutdown ---
+    logger.info("Application shutdown...")
+    # if storage.is_database_enabled():
+    #     asyncio.create_task(storage.start_stats_persistence_task(interval=60))
+    #     logger.info("[SYSTEM] 数据库统计后台持久化任务已启动 (间隔: 60s)")
+
+    # 启动全局统计定时清理任务
+    asyncio.create_task(global_stats_cleanup_task())
+
+    # 启动媒体文件定时清理任务
+    asyncio.create_task(media_cleanup_task())
+    logger.info(f"[SYSTEM] 媒体文件清理任务已启动（间隔: {MEDIA_CLEANUP_INTERVAL_SECONDS}秒，保留: {MEDIA_MAX_AGE_SECONDS}秒）")
+
+    # 启动自动登录刷新轮询
+    if login_service:
+        try:
+            asyncio.create_task(login_service.start_polling())
+            logger.info("[SYSTEM] 账户过期检查轮询已启动（间隔: 30分钟）")
+        except Exception as e:
+            logger.error(f"[SYSTEM] 启动登录服务失败: {e}")
+    else:
+        logger.info("[SYSTEM] 自动登录刷新未启用或依赖不可用")
+
+    # 启动会话绑定管理器（从数据库加载绑定关系，启动持久化任务）
+    try:
+        binding_mgr = get_session_binding_manager()
+        # [OPTIMIZE] 禁用会话绑定持久化，避免流浪模式产生的海量临时数据写入数据库
+        # await binding_mgr.load_from_db()
+        # asyncio.create_task(binding_mgr.start_persist_task())
+        logger.info("[SYSTEM] 会话绑定管理器已启动（内存模式，不持久化）")
+    except Exception as e:
+        logger.error(f"[SYSTEM] 启动会话绑定管理器失败: {e}")
+
 # ---------- OpenAI 兼容接口 ----------
 app = FastAPI(title="Gemini-Business OpenAI Gateway", lifespan=lifespan)
 
@@ -807,88 +889,6 @@ async def auto_refresh_accounts_task():
             logger.error(f"[AUTO-REFRESH] 自动刷新任务异常: {type(e).__name__}: {str(e)[:100]}")
             await asyncio.sleep(60)  # 出错后等待60秒再重试
 
-
-from contextlib import asynccontextmanager
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
-    global global_stats
-    
-    # --- Startup ---
-    # 文件迁移逻辑
-    old_accounts = "accounts.json"
-    if os.path.exists(old_accounts) and not os.path.exists(ACCOUNTS_FILE):
-        try:
-            shutil.copy(old_accounts, ACCOUNTS_FILE)
-            logger.info(f"{logger_prefix} 已迁移 {old_accounts} -> {ACCOUNTS_FILE}")
-        except Exception as e:
-            logger.warning(f"{logger_prefix} 文件迁移失败: {e}")
-
-    # 加载统计数据
-    global_stats = await load_stats()
-    # 初始化统计数据默认值
-    for key in ["request_timestamps", "failure_timestamps", "rate_limit_timestamps", "recent_conversations"]:
-        global_stats.setdefault(key, [])
-    global_stats.setdefault("model_request_timestamps", {})
-    
-    # 修复旧数据格式
-    if isinstance(global_stats["request_timestamps"], dict):
-         global_stats["request_timestamps"] = []
-         
-    uptime_tracker.configure_storage(os.path.join(DATA_DIR, "uptime.json"))
-    uptime_tracker.load_heartbeats()
-    logger.info(f"[SYSTEM] 统计数据已加载: {global_stats.get('total_requests', 0)} 次请求, {global_stats.get('total_visitors', 0)} 位访客")
-
-    # 启动缓存清理任务
-    asyncio.create_task(multi_account_mgr.start_background_cleanup())
-    logger.info("[SYSTEM] 后台缓存清理任务已启动（间隔: 5分钟）")
-
-    # 启动自动刷新账号任务
-    if os.environ.get("ACCOUNTS_CONFIG"):
-        logger.info("[SYSTEM] 自动刷新账号已跳过（使用 ACCOUNTS_CONFIG）")
-    elif storage.is_database_enabled() and AUTO_REFRESH_ACCOUNTS_SECONDS > 0:
-        asyncio.create_task(auto_refresh_accounts_task())
-        logger.info(f"[SYSTEM] 自动刷新账号任务已启动（间隔: {AUTO_REFRESH_ACCOUNTS_SECONDS}秒）")
-    elif storage.is_database_enabled():
-        logger.info("[SYSTEM] 自动刷新账号功能已禁用（配置为0）")
-
-    # [OPTIMIZE] 彻底禁用统计数据上报数据库 (原逻辑保留在注释中)
-    
-    yield
-    
-    # --- Shutdown ---
-    logger.info("Application shutdown...")
-    # if storage.is_database_enabled():
-    #     asyncio.create_task(storage.start_stats_persistence_task(interval=60))
-    #     logger.info("[SYSTEM] 数据库统计后台持久化任务已启动 (间隔: 60s)")
-
-    # 启动全局统计定时清理任务
-    asyncio.create_task(global_stats_cleanup_task())
-
-    # 启动媒体文件定时清理任务
-    asyncio.create_task(media_cleanup_task())
-    logger.info(f"[SYSTEM] 媒体文件清理任务已启动（间隔: {MEDIA_CLEANUP_INTERVAL_SECONDS}秒，保留: {MEDIA_MAX_AGE_SECONDS}秒）")
-
-    # 启动自动登录刷新轮询
-    if login_service:
-        try:
-            asyncio.create_task(login_service.start_polling())
-            logger.info("[SYSTEM] 账户过期检查轮询已启动（间隔: 30分钟）")
-        except Exception as e:
-            logger.error(f"[SYSTEM] 启动登录服务失败: {e}")
-    else:
-        logger.info("[SYSTEM] 自动登录刷新未启用或依赖不可用")
-
-    # 启动会话绑定管理器（从数据库加载绑定关系，启动持久化任务）
-    try:
-        binding_mgr = get_session_binding_manager()
-        # [OPTIMIZE] 禁用会话绑定持久化，避免流浪模式产生的海量临时数据写入数据库
-        # await binding_mgr.load_from_db()
-        # asyncio.create_task(binding_mgr.start_persist_task())
-        logger.info("[SYSTEM] 会话绑定管理器已启动（内存模式，不持久化）")
-    except Exception as e:
-        logger.error(f"[SYSTEM] 启动会话绑定管理器失败: {e}")
 
 # ---------- 日志脱敏函数 ----------
 def get_sanitized_logs(limit: int = 100) -> list:
