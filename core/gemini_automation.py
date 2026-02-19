@@ -144,6 +144,25 @@ class GeminiAutomation:
         options.set_argument("--disable-sync")
         options.set_argument("--no-first-run")
 
+        # 【关键】禁用所有后台下载和更新，防止内存飙升（组件更新/SafeBrowsing 等可额外消耗 100-300MB）
+        options.set_argument("--disable-component-update")
+        options.set_argument("--safebrowsing-disable-auto-update")
+        options.set_argument("--disable-client-side-phishing-detection")
+        options.set_argument("--disable-domain-reliability")
+        options.set_argument("--disable-features=OptimizationHints,TranslateUI")
+        options.set_argument("--disable-component-extensions-with-background-pages")
+        options.set_argument("--disable-background-timer-throttling")
+        options.set_argument("--disable-backgrounding-occluded-windows")
+        options.set_argument("--disable-renderer-backgrounding")
+        options.set_argument("--disable-hang-monitor")
+        options.set_argument("--disable-ipc-flooding-protection")
+        options.set_argument("--disable-popup-blocking")
+        options.set_argument("--disable-prompt-on-repost")
+        options.set_argument("--metrics-recording-only")
+        options.set_argument("--no-default-browser-check")
+        options.set_argument("--disk-cache-size=1")
+        options.set_argument("--aggressive-cache-discard")
+
         # Linux 稳定性参数
         if os.name != 'nt':
             options.set_argument("--disable-gpu")

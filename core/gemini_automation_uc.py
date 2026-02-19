@@ -84,6 +84,32 @@ class GeminiAutomationUC:
         options.add_argument("--window-size=1280,800")
         options.add_argument("--disable-dev-shm-usage")
 
+        # 禁用不必要的功能，提高稳定性
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--disable-sync")
+        options.add_argument("--no-first-run")
+
+        # 【关键】禁用所有后台下载和更新，防止内存飙升
+        options.add_argument("--disable-component-update")
+        options.add_argument("--safebrowsing-disable-auto-update")
+        options.add_argument("--disable-client-side-phishing-detection")
+        options.add_argument("--disable-domain-reliability")
+        options.add_argument("--disable-features=OptimizationHints,TranslateUI")
+        options.add_argument("--disable-component-extensions-with-background-pages")
+        options.add_argument("--disable-background-timer-throttling")
+        options.add_argument("--disable-backgrounding-occluded-windows")
+        options.add_argument("--disable-renderer-backgrounding")
+        options.add_argument("--disable-hang-monitor")
+        options.add_argument("--disable-ipc-flooding-protection")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--disable-prompt-on-repost")
+        options.add_argument("--metrics-recording-only")
+        options.add_argument("--no-default-browser-check")
+        options.add_argument("--disk-cache-size=1")
+        options.add_argument("--aggressive-cache-discard")
+
         # Linux 稳定性参数
         import os
         if os.name != 'nt':
