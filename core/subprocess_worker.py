@@ -6,6 +6,7 @@
 子进程退出后 OS 回收全部浏览器相关内存。
 """
 
+import gc
 import json
 import logging
 import os
@@ -21,6 +22,16 @@ logger = logging.getLogger("gemini.subprocess_worker")
 _RUNNER_SCRIPT = os.path.join(os.path.dirname(__file__), "browser_task_runner.py")
 # 默认超时（秒）
 _DEFAULT_TIMEOUT = 300
+
+
+def _close_proc_pipes(proc: subprocess.Popen) -> None:
+    """安全关闭子进程的所有管道，释放内核缓冲区内存。"""
+    for pipe in (proc.stdin, proc.stdout, proc.stderr):
+        if pipe:
+            try:
+                pipe.close()
+            except Exception:
+                pass
 
 
 def run_browser_in_subprocess(
@@ -56,7 +67,6 @@ def run_browser_in_subprocess(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=os.path.dirname(os.path.dirname(__file__)),  # 项目根目录
-            env=os.environ.copy(),
         )
     except Exception as exc:
         return {"success": False, "error": f"子进程启动失败: {exc}"}
@@ -64,87 +74,94 @@ def run_browser_in_subprocess(
     child_pid = proc.pid
     logger.info(f"[SUBPROCESS] 子进程已启动 (PID={child_pid})")
 
-    # 写入参数到 stdin
-    try:
-        proc.stdin.write(params_json.encode("utf-8"))
-        proc.stdin.close()
-    except Exception as exc:
-        _kill_proc(proc)
-        return {"success": False, "error": f"参数写入失败: {exc}"}
-
-    # 后台线程：实时读取 stderr 日志
+    # 后台线程实时读取 stderr 日志用的缓冲区
     stderr_lines = []
-    log_thread = threading.Thread(
-        target=_read_stderr_logs,
-        args=(proc, log_callback, stderr_lines),
-        daemon=True,
-    )
-    log_thread.start()
-
-    # 等待子进程完成（带超时和取消检查）
-    start_time = time.monotonic()
-    result = None
 
     try:
-        while True:
-            elapsed = time.monotonic() - start_time
+        # 写入参数到 stdin
+        try:
+            proc.stdin.write(params_json.encode("utf-8"))
+            proc.stdin.close()
+        except Exception as exc:
+            _kill_proc(proc)
+            return {"success": False, "error": f"参数写入失败: {exc}"}
 
-            # 检查超时
-            if elapsed > timeout:
-                log_callback("error", f"⏰ 浏览器子进程超时 ({timeout}s)，正在终止...")
-                _kill_proc(proc)
-                return {"success": False, "error": f"浏览器操作超时 ({timeout}s)"}
+        # 后台线程：实时读取 stderr 日志
+        log_thread = threading.Thread(
+            target=_read_stderr_logs,
+            args=(proc, log_callback, stderr_lines),
+            daemon=True,
+        )
+        log_thread.start()
 
-            # 检查取消
-            if cancel_check and cancel_check():
-                log_callback("warning", "🚫 收到取消请求，正在终止浏览器子进程...")
-                _kill_proc(proc)
-                return {"success": False, "error": "任务已取消"}
+        # 等待子进程完成（带超时和取消检查）
+        start_time = time.monotonic()
 
-            # 检查子进程是否结束
-            retcode = proc.poll()
-            if retcode is not None:
-                break
+        try:
+            while True:
+                elapsed = time.monotonic() - start_time
 
-            # 短暂等待
-            time.sleep(0.3)
+                # 检查超时
+                if elapsed > timeout:
+                    log_callback("error", f"⏰ 浏览器子进程超时 ({timeout}s)，正在终止...")
+                    _kill_proc(proc)
+                    return {"success": False, "error": f"浏览器操作超时 ({timeout}s)"}
 
-    except Exception as exc:
-        _kill_proc(proc)
-        return {"success": False, "error": f"子进程管理异常: {exc}"}
+                # 检查取消
+                if cancel_check and cancel_check():
+                    log_callback("warning", "🚫 收到取消请求，正在终止浏览器子进程...")
+                    _kill_proc(proc)
+                    return {"success": False, "error": "任务已取消"}
 
-    # 等待日志线程结束
-    log_thread.join(timeout=5)
+                # 检查子进程是否结束
+                retcode = proc.poll()
+                if retcode is not None:
+                    break
 
-    # 子进程已退出，但浏览器子孙进程可能仍然残留（如 atexit 被 SIGKILL/OOM 跳过）
-    # 在主进程侧执行兜底清理（BROWSER_LOCK 保证同时只有一个浏览器任务，不会误杀）
-    _cleanup_orphan_browsers(child_pid)
+                # 短暂等待
+                time.sleep(0.3)
 
-    # 读取 stdout 获取结果
-    try:
-        stdout_data = proc.stdout.read().decode("utf-8", errors="replace")
-    except Exception:
-        stdout_data = ""
+        except Exception as exc:
+            _kill_proc(proc)
+            return {"success": False, "error": f"子进程管理异常: {exc}"}
 
-    logger.info(f"[SUBPROCESS] 子进程已结束 (PID={child_pid}, exitcode={proc.returncode})")
+        # 等待日志线程结束
+        log_thread.join(timeout=5)
 
-    # 解析 RESULT: 行
-    for line in stdout_data.splitlines():
-        if line.startswith("RESULT:"):
-            try:
-                result = json.loads(line[7:])
-                return result
-            except json.JSONDecodeError as exc:
-                return {"success": False, "error": f"结果解析失败: {exc}"}
+        # 子进程已退出，执行兜底清理（BROWSER_LOCK 保证同时只有一个浏览器任务，不会误杀）
+        _cleanup_orphan_browsers(child_pid)
 
-    # 没有找到 RESULT 行
-    if proc.returncode != 0:
-        # 收集 stderr 中非 LOG: 开头的行作为错误信息
-        error_lines = [l for l in stderr_lines if not l.startswith("LOG:")]
-        error_msg = "\n".join(error_lines[-10:]) if error_lines else f"exitcode={proc.returncode}"
-        return {"success": False, "error": f"子进程异常退出: {error_msg}"}
+        # 读取 stdout 获取结果
+        try:
+            stdout_data = proc.stdout.read().decode("utf-8", errors="replace")
+        except Exception:
+            stdout_data = ""
 
-    return {"success": False, "error": "子进程未返回结果"}
+        logger.info(f"[SUBPROCESS] 子进程已结束 (PID={child_pid}, exitcode={proc.returncode})")
+
+        # 解析 RESULT: 行
+        for line in stdout_data.splitlines():
+            if line.startswith("RESULT:"):
+                try:
+                    return json.loads(line[7:])
+                except json.JSONDecodeError as exc:
+                    return {"success": False, "error": f"结果解析失败: {exc}"}
+
+        # 没有找到 RESULT 行
+        if proc.returncode != 0:
+            error_lines = [l for l in stderr_lines if not l.startswith("LOG:")]
+            error_msg = "\n".join(error_lines[-10:]) if error_lines else f"exitcode={proc.returncode}"
+            return {"success": False, "error": f"子进程异常退出: {error_msg}"}
+
+        return {"success": False, "error": "子进程未返回结果"}
+
+    finally:
+        # 【关键】无论何种返回路径，都必须关闭管道并释放内存
+        _close_proc_pipes(proc)
+        stderr_lines.clear()
+        # 强制垃圾回收，释放 Popen 对象、管道缓冲区等循环引用
+        gc.collect()
+        logger.debug(f"[SUBPROCESS] 管道已关闭，GC 已触发 (PID={child_pid})")
 
 
 def _read_stderr_logs(
