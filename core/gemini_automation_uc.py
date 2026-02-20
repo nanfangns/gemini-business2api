@@ -80,6 +80,7 @@ class GeminiAutomationUC:
         # 基础参数
         options.add_argument("--incognito")
         options.add_argument("--no-sandbox")
+        options.add_argument("--gemini-business-automation")
         options.add_argument("--disable-setuid-sandbox")
         options.add_argument("--window-size=1280,800")
         options.add_argument("--disable-dev-shm-usage")

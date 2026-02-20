@@ -131,6 +131,7 @@ class GeminiAutomation:
 
         options.set_argument("--incognito")
         options.set_argument("--no-sandbox")
+        options.set_argument("--gemini-business-automation")
         options.set_argument("--disable-dev-shm-usage")
         options.set_argument("--disable-setuid-sandbox")
         options.set_argument("--disable-blink-features=AutomationControlled")

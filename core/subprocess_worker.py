@@ -256,6 +256,8 @@ def _cleanup_orphan_browsers(
         "fallback_candidates": 0,
         "fallback_killed": 0,
         "fallback_rounds": 0,
+        "global_candidates": 0,
+        "global_killed": 0,
         "remaining_after_cleanup": 0,
     }
 
@@ -312,28 +314,52 @@ def _cleanup_orphan_browsers(
 
             time.sleep(0.2)
 
-        # 3) 复查：统计剩余浏览器进程数
+        # 3) 全局兜底清理：如果在 Windows 下系统脱离了进程树管理，采用命令行特征匹配清理
         try:
-            current = psutil.Process()
-            children = current.children(recursive=True)
-            remaining = 0
-            for child in children:
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
                 try:
-                    name = child.name().lower()
+                    name = (proc.info.get('name') or "").lower()
                     if "chrom" in name or "google-chrome" in name:
-                        remaining += 1
+                        cmdline = proc.info.get('cmdline') or []
+                        cmdline_str = " ".join(cmdline).lower()
+                        if "--gemini-business-automation" in cmdline_str or "gemini_chrome_" in cmdline_str or "uc-profile-" in cmdline_str:
+                            stats["global_candidates"] += 1
+                            logger.info(f"[SUBPROCESS] 🔪 全局扫描命中残留浏览器进程: PID={proc.pid} Name={name}")
+                            proc.kill()
+                            try:
+                                proc.wait(timeout=3)
+                            except psutil.TimeoutExpired:
+                                pass
+                            stats["global_killed"] += 1
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+        except Exception as e:
+            logger.warning(f"[SUBPROCESS] 全局扫描清理出现异常: {e}")
+
+        # 4) 复查：只统计带有特定自动化标识的剩余 Chromium 进程数
+        try:
+            remaining = 0
+            for proc in psutil.process_iter(['name', 'cmdline']):
+                try:
+                    name = (proc.info.get('name') or "").lower()
+                    if "chrom" in name or "google-chrome" in name:
+                        cmdline = proc.info.get('cmdline') or []
+                        cmdline_str = " ".join(cmdline).lower()
+                        if "--gemini-business-automation" in cmdline_str or "gemini_chrome_" in cmdline_str or "uc-profile-" in cmdline_str:
+                            remaining += 1
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     pass
             stats["remaining_after_cleanup"] = remaining
         except Exception:
             pass
 
-        total_killed = stats["tracked_killed"] + stats["fallback_killed"]
+        total_killed = stats["tracked_killed"] + stats["fallback_killed"] + stats["global_killed"]
         if total_killed or stats["remaining_after_cleanup"]:
             logger.info(
                 "[SUBPROCESS] 兜底清理统计: "
                 f"reason={reason}, tracked={stats['tracked_killed']}/{stats['tracked_candidates']}, "
                 f"fallback={stats['fallback_killed']}/{stats['fallback_candidates']}, "
+                f"global={stats['global_killed']}/{stats['global_candidates']}, "
                 f"remaining={stats['remaining_after_cleanup']}, rounds={stats['fallback_rounds']}"
             )
 
