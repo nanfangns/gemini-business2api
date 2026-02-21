@@ -12,6 +12,8 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Deque, Dict, Generic, List, Optional, TypeVar
 from collections import deque
 
+import psutil
+
 from core.account import update_accounts_config
 
 logger = logging.getLogger("gemini.base_task")
@@ -121,6 +123,23 @@ class BaseTaskService(Generic[T]):
         self.set_multi_account_mgr = set_multi_account_mgr
         
         self._max_completed_tasks = 50  # 最大保留50个已完成的任务历史
+        self._max_task_results = 20
+        self._max_task_logs = 120
+
+    def _safe_rss_mb(self) -> float:
+        try:
+            return psutil.Process().memory_info().rss / (1024 * 1024)
+        except Exception:
+            return 0.0
+
+    def _task_payload_snapshot(self) -> tuple[int, int, int]:
+        tasks_count = len(self._tasks)
+        total_results = 0
+        total_logs = 0
+        for t in self._tasks.values():
+            total_results += len(t.results)
+            total_logs += len(t.logs)
+        return tasks_count, total_results, total_logs
 
     def _recycle_executor(self) -> None:
         """回收线程池并重建，释放刷新/注册任务在线程中累积的内存碎片。"""
@@ -230,6 +249,17 @@ class BaseTaskService(Generic[T]):
 
         task.status = TaskStatus.RUNNING
         self._append_log(task, "info", "task started")
+        rss_before = self._safe_rss_mb()
+        tasks_before, results_before, logs_before = self._task_payload_snapshot()
+        logger.info(
+            "[%s] task memory snapshot(before): rss=%.1fMB pending=%d tasks=%d results=%d logs=%d",
+            self._log_prefix,
+            rss_before,
+            len(self._pending_task_ids),
+            tasks_before,
+            results_before,
+            logs_before,
+        )
         try:
             coro = self._execute_task(task)
             self._current_asyncio_task = asyncio.create_task(coro)
@@ -257,6 +287,18 @@ class BaseTaskService(Generic[T]):
             self._recycle_executor()
             # 任务执行结束，清理过旧的历史记录
             self._cleanup_finished_tasks()
+            rss_after = self._safe_rss_mb()
+            tasks_after, results_after, logs_after = self._task_payload_snapshot()
+            logger.info(
+                "[%s] task memory snapshot(after): rss=%.1fMB pending=%d tasks=%d results=%d logs=%d status=%s",
+                self._log_prefix,
+                rss_after,
+                len(self._pending_task_ids),
+                tasks_after,
+                results_after,
+                logs_after,
+                task.status.value,
+            )
 
     def _add_cancel_hook(self, task_id: str, hook: Callable[[], None]) -> None:
         """注册取消回调（线程安全）。"""
@@ -298,8 +340,8 @@ class BaseTaskService(Generic[T]):
         }
         with self._log_lock:
             task.logs.append(entry)
-            if len(task.logs) > 200:
-                task.logs = task.logs[-200:]
+            if len(task.logs) > self._max_task_logs:
+                task.logs = task.logs[-self._max_task_logs:]
 
         log_message = f"[{self._log_prefix}] {message}"
         if level == "warning":
@@ -347,10 +389,13 @@ class BaseTaskService(Generic[T]):
     def _cleanup_finished_tasks(self) -> None:
         """清理已完成的任务历史（保留最近的 50 个）"""
         finished_tasks = [
-            t_id for t_id, t in self._tasks.items() 
+            t_id for t_id, t in self._tasks.items()
             if t.status in [TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED]
         ]
-        
+
+        before_tasks = len(self._tasks)
+        removed = 0
+
         if len(finished_tasks) > self._max_completed_tasks:
             # 按完成时间排序
             finished_tasks.sort(key=lambda tid: self._tasks[tid].finished_at or 0)
@@ -359,5 +404,17 @@ class BaseTaskService(Generic[T]):
             for tid in finished_tasks[:to_remove]:
                 self._tasks.pop(tid, None)
                 self._clear_cancel_hooks(tid)
-            logger.info("[%s] 已清理 %d 个过期任务历史 (当前存余: %d)", 
+            removed = to_remove
+            logger.info("[%s] 已清理 %d 个过期任务历史 (当前存余: %d)",
                         self._log_prefix, to_remove, len(self._tasks))
+
+        tasks_after, results_after, logs_after = self._task_payload_snapshot()
+        logger.info(
+            "[%s] cleanup summary: tasks %d->%d (removed=%d), payload results=%d logs=%d",
+            self._log_prefix,
+            before_tasks,
+            tasks_after,
+            removed,
+            results_after,
+            logs_after,
+        )

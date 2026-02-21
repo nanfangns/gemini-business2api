@@ -585,7 +585,18 @@ class GeminiAutomationUC:
                 try:
                     name = child.name().lower()
                     matched, process_type = is_browser_related_process(name, child.cmdline())
-                    if matched:
+                    
+                    has_env = False
+                    try:
+                        env = child.environ()
+                        if env and env.get("GEMINI_AUTOMATION_MARKER") == "1":
+                            has_env = True
+                    except (psutil.AccessDenied, OSError):
+                        pass
+                    
+                    if matched or has_env or "conhost" in name:
+                        if not matched:
+                            process_type = "conhost" if "conhost" in name else "marked_process"
                         self._log(
                             "info",
                             f"🔪 发现残留进程，强制清理 (UC): PID={child.pid} Name={name} Type={process_type}",

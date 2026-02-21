@@ -149,8 +149,8 @@ class LoginService(BaseTaskService[LoginTask]):
                 result = {"success": False, "email": account_id, "error": str(exc)}
             task.progress += 1
             task.results.append(result)
-            if len(task.results) > 50:
-                task.results = task.results[-50:]
+            if len(task.results) > self._max_task_results:
+                task.results = task.results[-self._max_task_results:]
 
             if result.get("success"):
                 accounts_dirty = True
