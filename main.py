@@ -929,9 +929,9 @@ async def auto_refresh_accounts_task():
             if _last_known_accounts_version != db_version:
                 logger.info("[AUTO-REFRESH] 检测到账号变化，正在自动刷新...")
 
-                # 重新加载账号配置
-                multi_account_mgr = _reload_accounts(
-                    multi_account_mgr,
+                old_mgr = multi_account_mgr
+                new_mgr = _reload_accounts(
+                    old_mgr,
                     http_client,
                     USER_AGENT,
                     ACCOUNT_FAILURE_THRESHOLD,
@@ -940,8 +940,13 @@ async def auto_refresh_accounts_task():
                     global_stats
                 )
 
+                logger.info(
+                    f"[AUTO-REFRESH] 准备切换 manager: old_id={id(old_mgr)} -> new_id={id(new_mgr)}"
+                )
+
+                _set_multi_account_mgr(new_mgr)
                 _last_known_accounts_version = db_version
-                logger.info(f"[AUTO-REFRESH] 账号刷新完成，当前账号数: {len(multi_account_mgr.accounts)}")
+                logger.info(f"[AUTO-REFRESH] 账号刷新完成，当前账号数: {len(new_mgr.accounts)}")
 
         except asyncio.CancelledError:
             logger.info("[AUTO-REFRESH] 自动刷新任务已停止")
