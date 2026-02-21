@@ -569,6 +569,16 @@ def _set_multi_account_mgr(new_mgr):
     # 兼容线程池回调入口：同步包装为主循环中的异步串行切换
     if main_loop and not main_loop.is_closed():
         try:
+            try:
+                current_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+
+            if current_loop is main_loop:
+                # 已在目标事件循环中：禁止阻塞等待，避免卡住整个服务
+                main_loop.create_task(_set_multi_account_mgr_async(new_mgr))
+                return
+
             fut = asyncio.run_coroutine_threadsafe(_set_multi_account_mgr_async(new_mgr), main_loop)
             fut.result(timeout=15)
         except Exception as e:
@@ -1000,7 +1010,7 @@ async def auto_refresh_accounts_task():
                     f"[AUTO-REFRESH] 准备切换 manager: old_id={id(old_mgr)} -> new_id={id(new_mgr)}"
                 )
 
-                _set_multi_account_mgr(new_mgr)
+                await _set_multi_account_mgr_async(new_mgr)
                 _last_known_accounts_version = db_version
                 trim_process_memory("auto_refresh_accounts")
                 after_rss_mb, after_browsers = _collect_memory_and_browser_snapshot()
