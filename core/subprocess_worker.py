@@ -66,6 +66,10 @@ def run_browser_in_subprocess(
     except (TypeError, ValueError) as exc:
         return {"success": False, "error": f"参数序列化失败: {exc}"}
 
+    # 传入隐形环境变量标
+    env_copy = os.environ.copy()
+    env_copy["GEMINI_AUTOMATION_MARKER"] = "1"
+
     # 启动子进程
     python_exe = sys.executable
     try:
@@ -75,6 +79,7 @@ def run_browser_in_subprocess(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=os.path.dirname(os.path.dirname(__file__)),  # 项目根目录
+            env=env_copy,
         )
     except Exception as exc:
         return {"success": False, "error": f"子进程启动失败: {exc}"}
@@ -318,19 +323,35 @@ def _cleanup_orphan_browsers(
 
             time.sleep(0.2)
 
-        # 3) 全局兜底清理：如果在 Windows 下系统脱离了进程树管理，采用命令行特征匹配清理
+        # 3) 全局兜底清理：如果在 Windows 下系统脱离了进程树管理，采用命令行特征匹配清理和环境变量标记
         try:
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
                 try:
                     name = (proc.info.get('name') or "").lower()
                     cmdline = proc.info.get('cmdline') or []
                     matched, process_type = is_browser_related_process(name, cmdline)
-                    if matched and has_automation_marker(" ".join(cmdline).lower()):
+
+                    # 检查环境变量
+                    has_env_marker = False
+                    try:
+                        env = proc.environ()
+                        if env and env.get("GEMINI_AUTOMATION_MARKER") == "1":
+                            has_env_marker = True
+                    except (psutil.AccessDenied, psutil.ZombieProcess, OSError):
+                        pass
+                        
+                    cmdline_str = " ".join(cmdline).lower()
+                    has_cmd_marker = has_automation_marker(cmdline_str)
+
+                    if (matched and has_cmd_marker) or has_env_marker:
+                        if not matched and has_env_marker:
+                            process_type = "conhost" if "conhost" in name else "marked_process"
+                            
                         stats["global_candidates"] += 1
                         bump_hit(stats, "global", process_type, "candidates")
                         logger.info(
                             "[SUBPROCESS] 🔪 全局扫描命中残留浏览器进程: "
-                            f"PID={proc.pid} Name={name} Type={process_type}"
+                            f"PID={proc.pid} Name={name} Type={process_type} EnvMarker={has_env_marker}"
                         )
                         proc.kill()
                         try:
@@ -353,8 +374,19 @@ def _cleanup_orphan_browsers(
                     cmdline = proc.info.get('cmdline') or []
                     cmdline_str = " ".join(cmdline).lower()
                     matched, process_type = is_browser_related_process(name, cmdline)
-                    if matched and has_automation_marker(cmdline_str):
+                    
+                    has_env_marker = False
+                    try:
+                        env = proc.environ()
+                        if env and env.get("GEMINI_AUTOMATION_MARKER") == "1":
+                            has_env_marker = True
+                    except (psutil.AccessDenied, psutil.ZombieProcess, OSError):
+                        pass
+                        
+                    if (matched and has_automation_marker(cmdline_str)) or has_env_marker:
                         remaining += 1
+                        if not matched and has_env_marker:
+                            process_type = "conhost" if "conhost" in name else "marked_process"
                         bump_hit(stats, "global", process_type, "remaining")
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     pass

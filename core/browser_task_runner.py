@@ -33,8 +33,18 @@ def _final_browser_cleanup():
         children = current.children(recursive=True)
         for child in children:
             try:
-                matched, _ = is_browser_related_process(child.name(), child.cmdline())
-                if matched:
+                name = child.name().lower()
+                matched, _ = is_browser_related_process(name, child.cmdline())
+                
+                has_env = False
+                try:
+                    env = child.environ()
+                    if env and env.get("GEMINI_AUTOMATION_MARKER") == "1":
+                        has_env = True
+                except Exception:
+                    pass
+                    
+                if matched or has_env or "conhost" in name:
                     child.kill()
                     try:
                         child.wait(timeout=3)
