@@ -5,7 +5,7 @@
         <div
           v-for="toast in toasts"
           :key="toast.id"
-          class="flex min-w-[320px] items-start gap-3 rounded-2xl border border-border bg-card px-4 py-3 shadow-lg"
+          class="ios-glass-strong ios-motion flex min-w-[320px] items-start gap-3 rounded-2xl px-4 py-3"
           :class="toastClass(toast.type)"
         >
           <div class="flex-shrink-0">
@@ -38,7 +38,7 @@
             </svg>
             <svg
               v-else
-              class="h-5 w-5 text-sky-500"
+              class="h-5 w-5 text-primary"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -72,13 +72,13 @@ const toasts = toastState.toasts
 const toastClass = (type: string) => {
   switch (type) {
     case 'success':
-      return 'border-emerald-200 bg-emerald-50'
+      return 'border-emerald-200/70 bg-emerald-50/80'
     case 'error':
-      return 'border-rose-200 bg-rose-50'
+      return 'border-rose-200/70 bg-rose-50/80'
     case 'warning':
-      return 'border-amber-200 bg-amber-50'
+      return 'border-amber-200/70 bg-amber-50/80'
     default:
-      return 'border-sky-200 bg-sky-50'
+      return 'border-primary/25 bg-primary/10'
   }
 }
 </script>
@@ -86,20 +86,20 @@ const toastClass = (type: string) => {
 <style scoped>
 .toast-enter-active,
 .toast-leave-active {
-  transition: all 0.3s ease;
+  transition: transform var(--motion-medium) var(--ease-ios), opacity var(--motion-medium) var(--ease-ios);
 }
 
 .toast-enter-from {
   opacity: 0;
-  transform: translateX(100%);
+  transform: translateY(-8px) translateX(12px) scale(0.98);
 }
 
 .toast-leave-to {
   opacity: 0;
-  transform: translateX(100%);
+  transform: translateY(-6px) translateX(10px) scale(0.98);
 }
 
 .toast-move {
-  transition: transform 0.3s ease;
+  transition: transform var(--motion-medium) var(--ease-ios);
 }
 </style>

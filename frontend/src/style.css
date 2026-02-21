@@ -6,40 +6,56 @@
 
 @layer base {
   :root {
-    /* 纸张质感调色盘 */
-    --background: 210 40% 98%;
-    /* 极淡的灰蓝底色 #f8fafc */
-    --foreground: 222 47% 11%;
+    /* 春节科技风调色盘 */
+    --background: 20 33% 98%;
+    --foreground: 350 48% 14%;
 
     --card: 0 0% 100%;
-    /* 纯白纸张卡片 */
-    --card-foreground: 222 47% 11%;
+    --card-foreground: 350 48% 14%;
 
-    --primary: 243 75% 59%;
-    /* 活力紫 #6366f1 */
-    --primary-foreground: 210 40% 98%;
+    --primary: 355 86% 54%;
+    /* 新春主色：瑞彩红 */
+    --primary-foreground: 43 100% 96%;
 
-    --secondary: 210 40% 96%;
-    --secondary-foreground: 222 47% 11%;
+    --secondary: 24 62% 95%;
+    --secondary-foreground: 350 48% 14%;
 
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 47%;
+    --muted: 24 45% 95%;
+    --muted-foreground: 8 22% 42%;
 
-    --accent: 188 91% 40%;
-    /* 辅色：清爽青 #06b6d4 */
-    --accent-foreground: 210 40% 98%;
+    --accent: 42 96% 53%;
+    /* 点缀色：鎏金 */
+    --accent-foreground: 12 38% 18%;
 
     --destructive: 0 84% 60%;
     --destructive-foreground: 210 40% 98%;
 
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 243 75% 59%;
+    --border: 20 42% 88%;
+    --input: 20 42% 88%;
+    --ring: 355 86% 54%;
 
     --radius: 0.6rem;
-    /* 克制的 9.6px 圆角 */
-    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
-    --shadow-paper: 0 2px 8px -1px rgb(0 0 0 / 0.03), 0 1px 4px -2px rgb(0 0 0 / 0.02);
+    --shadow-sm: 0 1px 2px 0 rgb(101 18 18 / 0.08);
+    --shadow-paper: 0 12px 32px -18px rgb(153 27 27 / 0.24), 0 8px 14px -12px rgb(251 191 36 / 0.36);
+
+    /* iOS18 风格动效/层级 */
+    --motion-fast: 160ms;
+    --motion-medium: 240ms;
+    --motion-slow: 320ms;
+    --ease-ios: cubic-bezier(0.22, 1, 0.36, 1);
+
+    --glass-bg: hsla(0, 0%, 100%, 0.62);
+    --glass-bg-strong: hsla(0, 0%, 100%, 0.78);
+    --glass-border: hsla(355, 86%, 54%, 0.16);
+
+    --shadow-card: 0 12px 30px -22px rgba(153, 27, 27, 0.32), 0 8px 18px -18px rgba(245, 158, 11, 0.36);
+    --shadow-float: 0 24px 56px -28px rgba(153, 27, 27, 0.44), 0 14px 30px -24px rgba(245, 158, 11, 0.4);
+
+    --chart-primary: hsl(var(--primary));
+    --chart-accent: hsl(var(--accent));
+    --chart-danger: #f43f5e;
+    --chart-grid: rgba(148, 103, 103, 0.18);
+    --chart-label: rgba(103, 72, 72, 0.72);
   }
 }
 
@@ -56,7 +72,10 @@
     margin: 0;
     padding: 0;
     overflow-x: hidden;
-    /* 移除背景渐变，保持纯净纸感 */
+    background:
+      radial-gradient(circle at 12% 16%, rgba(255, 113, 86, 0.18) 0%, transparent 42%),
+      radial-gradient(circle at 88% 14%, rgba(251, 191, 36, 0.18) 0%, transparent 36%),
+      linear-gradient(120deg, rgba(127, 29, 29, 0.05) 0%, rgba(255, 255, 255, 0.72) 45%, rgba(251, 191, 36, 0.07) 100%);
     background-color: hsl(var(--background));
   }
 
@@ -69,6 +88,7 @@
 
   #app {
     min-height: 100vh;
+    position: relative;
   }
 }
 
@@ -153,8 +173,8 @@ html {
 .loading-bar {
   height: 100%;
   width: 0%;
-  background: linear-gradient(to r, hsl(var(--primary)), hsl(var(--accent)));
-  box-shadow: 0 0 10px hsla(var(--primary), 0.5);
+  background: linear-gradient(90deg, hsl(var(--primary)) 0%, hsl(var(--accent)) 55%, hsl(var(--primary)) 100%);
+  box-shadow: 0 0 16px hsla(var(--primary), 0.45), 0 0 28px hsla(var(--accent), 0.35);
   transition: width 0.3s ease;
 }
 
@@ -366,6 +386,52 @@ html {
     transform: scaleY(0.1);
     opacity: 0.6;
   }
+}
+
+/* iOS18 统一交互基线 */
+.ios-glass {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: var(--shadow-card);
+}
+
+.ios-glass-strong {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  box-shadow: var(--shadow-float);
+}
+
+.ios-motion {
+  transition-property: color, background-color, border-color, box-shadow, transform, opacity;
+  transition-duration: var(--motion-medium);
+  transition-timing-function: var(--ease-ios);
+}
+
+.ios-motion-fast {
+  transition-duration: var(--motion-fast);
+}
+
+.ios-pressable {
+  transition: transform var(--motion-fast) var(--ease-ios), box-shadow var(--motion-medium) var(--ease-ios),
+    border-color var(--motion-medium) var(--ease-ios), background-color var(--motion-medium) var(--ease-ios);
+}
+
+.ios-pressable:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-card);
+}
+
+.ios-pressable:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.ios-focus-ring:focus-visible {
+  outline: 2px solid hsla(var(--primary), 0.3);
+  outline-offset: 2px;
 }
 
 /* Logo Mark Styles */

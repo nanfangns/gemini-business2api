@@ -11,8 +11,8 @@
         @click="isSidebarOpen = false"
       ></div>
       <aside
-        class="fixed inset-y-0 left-0 z-40 w-72 -translate-x-full bg-white border-r border-slate-200
-               transition-[width,transform] duration-300 ease-in-out will-change-[transform] transform-gpu flex flex-col lg:static lg:translate-x-0
+        class="fixed inset-y-0 left-0 z-40 w-72 -translate-x-full border-r border-border/80
+               bg-gradient-to-b from-card via-card to-secondary/50 transition-[width,transform] duration-[var(--motion-slow)] ease-[var(--ease-ios)] will-change-[transform] transform-gpu flex flex-col lg:static lg:translate-x-0
                lg:border-r lg:sticky lg:top-0 lg:h-screen shadow-sm"
         :class="[
           { 'translate-x-0': isSidebarOpen, 'w-24 lg:w-24': isSidebarCollapsed },
@@ -39,7 +39,7 @@
                 <path d="M12 2C6.477 2 2 6.477 2 12c0 4.419 2.865 8.166 6.839 9.489.5.09.682-.217.682-.483 0-.237-.009-.868-.014-1.703-2.782.604-3.369-1.341-3.369-1.341-.454-1.154-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.004.071 1.532 1.031 1.532 1.031.892 1.529 2.341 1.087 2.91.832.091-.647.349-1.087.636-1.337-2.22-.253-4.555-1.11-4.555-4.944 0-1.092.39-1.987 1.029-2.687-.103-.253-.446-1.272.098-2.65 0 0 .84-.269 2.75 1.026A9.564 9.564 0 0 1 12 6.844c.85.004 1.705.115 2.504.337 1.909-1.295 2.748-1.026 2.748-1.026.546 1.378.202 2.397.1 2.65.64.7 1.028 1.595 1.028 2.687 0 3.842-2.338 4.687-4.566 4.936.359.309.678.919.678 1.852 0 1.337-.012 2.418-.012 2.747 0 .268.18.577.688.479A10.002 10.002 0 0 0 22 12c0-5.523-4.477-10-10-10z" />
               </svg>
             </a>
-            <span v-if="!isSidebarCollapsed" class="text-base font-bold tracking-tight text-slate-800">Gemini Business</span>
+            <span v-if="!isSidebarCollapsed" class="text-base font-bold tracking-tight bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">Gemini Business</span>
           </div>
         </div>
 
@@ -79,7 +79,7 @@
         </nav>
 
         <div class="mt-auto border-t border-border px-6 py-3 lg:py-4">
-          <div v-if="!isSidebarCollapsed" class="rounded-2xl bg-secondary/60 p-3">
+          <div v-if="!isSidebarCollapsed" class="rounded-2xl border border-primary/15 bg-gradient-to-br from-primary/10 via-card to-accent/10 p-3 shadow-[0_12px_24px_-18px_rgba(220,38,38,0.45)]">
             <p class="text-xs tracking-[0.12em] text-muted-foreground">
               <a
                 href="https://github.com/Dreamy-rain/gemini-business2api"
@@ -126,8 +126,8 @@
         </div>
       </aside>
 
-      <main class="min-w-0 flex-1 overflow-hidden lg:ml-0 bg-[#f8fafc]">
-        <header class="min-w-0 flex flex-col gap-4 border-b border-slate-200 bg-white/80 px-6 py-5 backdrop-blur-md lg:flex-row lg:items-center lg:justify-between lg:px-10">
+      <main class="min-w-0 flex-1 overflow-hidden lg:ml-0 bg-gradient-to-br from-[#fff7f3] via-[#fffdf8] to-[#fffbeb]">
+        <header class="min-w-0 flex flex-col gap-4 border-b border-border/80 bg-card/90 px-6 py-5 backdrop-blur-md lg:flex-row lg:items-center lg:justify-between lg:px-10">
           <div class="flex items-center gap-3">
             <button
               class="inline-flex h-10 w-10 items-center justify-center rounded-full border border-border text-foreground transition-colors
@@ -378,9 +378,9 @@ const navItemClass = (path: string) => {
 
 const navIconClass = (path: string) => {
   if (route.path === path) {
-    return 'bg-primary-foreground/15 text-primary-foreground border-primary-foreground/40'
+    return 'bg-primary-foreground/20 text-primary-foreground border-primary-foreground/50'
   }
-  return 'bg-secondary text-muted-foreground group-hover:text-accent-foreground'
+  return 'bg-accent/10 text-amber-700 border-accent/30 group-hover:bg-accent/20 group-hover:text-amber-800'
 }
 
 

@@ -168,11 +168,11 @@ const statCards = computed(() => [
     color: stats.value?.load_color,
   },
   { label: '平均响应', value: avgResponseTime.value },
-  { label: '成功率', value: successRate.value, color: '#10b981' },
+  { label: '成功率', value: successRate.value, color: '#059669' },
   { label: '对话次数', value: totalLogs.value },
-  { label: '成功', value: successLogs.value, color: '#10b981' },
-  { label: '失败', value: errorLogs.value, color: '#ef4444' },
-  { label: '更新时间', value: lastUpdated.value, color: '#6b7280' },
+  { label: '成功', value: successLogs.value, color: '#059669' },
+  { label: '失败', value: errorLogs.value, color: '#e11d48' },
+  { label: '更新时间', value: lastUpdated.value, color: '#92400e' },
 ])
 
 const statusLabel = (status: PublicLogStatus) => {
@@ -206,16 +206,16 @@ const eventLabel = (event: PublicLogEvent) => {
 
 const eventBadgeClass = (event: PublicLogEvent) => {
   const base = 'rounded-md px-2 py-0.5 text-[11px] font-semibold'
-  if (event.type === 'start') return `${base} bg-blue-100 text-blue-700`
-  if (event.type === 'select') return `${base} bg-violet-100 text-violet-700`
+  if (event.type === 'start') return `${base} bg-primary/10 text-primary`
+  if (event.type === 'select') return `${base} bg-secondary text-secondary-foreground`
   if (event.type === 'retry') return `${base} bg-amber-100 text-amber-700`
-  if (event.type === 'switch') return `${base} bg-cyan-100 text-cyan-700`
+  if (event.type === 'switch') return `${base} bg-accent/25 text-accent-foreground`
   if (event.type === 'complete') {
     if (event.status === 'success') return `${base} bg-emerald-100 text-emerald-700`
     if (event.status === 'error') return `${base} bg-rose-100 text-rose-700`
     if (event.status === 'timeout') return `${base} bg-amber-100 text-amber-700`
   }
-  return `${base} bg-slate-100 text-slate-600`
+  return `${base} bg-muted text-muted-foreground`
 }
 
 const loadCollapseState = () => {

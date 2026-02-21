@@ -271,25 +271,25 @@ const levelOptions = [
 ]
 
 const CATEGORY_COLORS: Record<string, string> = {
-  SYSTEM: '#9e9e9e',
-  CONFIG: '#607d8b',
-  LOG: '#9e9e9e',
-  AUTH: '#4caf50',
-  SESSION: '#00bcd4',
-  FILE: '#ff9800',
-  CHAT: '#2196f3',
-  API: '#8bc34a',
-  CACHE: '#9c27b0',
-  ACCOUNT: '#f44336',
-  MULTI: '#673ab7',
+  SYSTEM: '#a16207',
+  CONFIG: '#b45309',
+  LOG: '#92400e',
+  AUTH: '#059669',
+  SESSION: '#dc2626',
+  FILE: '#d97706',
+  CHAT: '#ea580c',
+  API: '#16a34a',
+  CACHE: '#be123c',
+  ACCOUNT: '#e11d48',
+  MULTI: '#c2410c',
 }
 
 const ACCOUNT_COLORS: Record<string, string> = {
-  account_1: '#9c27b0',
-  account_2: '#e91e63',
-  account_3: '#00bcd4',
-  account_4: '#4caf50',
-  account_5: '#ff9800',
+  account_1: '#be123c',
+  account_2: '#e11d48',
+  account_3: '#dc2626',
+  account_4: '#16a34a',
+  account_5: '#d97706',
 }
 
 const statusToneClass = computed(() =>
@@ -301,10 +301,10 @@ const getAccountColor = (accountId: string) => ACCOUNT_COLORS[accountId] || '#75
 
 const levelBadgeClass = (level: LogEntry['level']) => {
   const base = 'rounded px-2 py-0.5 text-[10px] font-semibold'
-  if (level === 'INFO') return `${base} bg-blue-100 text-blue-700`
+  if (level === 'INFO') return `${base} bg-primary/10 text-primary`
   if (level === 'WARNING') return `${base} bg-amber-100 text-amber-700`
   if (level === 'ERROR' || level === 'CRITICAL') return `${base} bg-rose-100 text-rose-700`
-  return `${base} bg-violet-100 text-violet-700`
+  return `${base} bg-secondary text-secondary-foreground`
 }
 
 const statusBadgeClass = (status: string) => {

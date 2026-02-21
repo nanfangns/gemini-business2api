@@ -2,8 +2,7 @@
   <div ref="root" class="relative w-full">
     <button
       type="button"
-      class="flex w-full items-center justify-between gap-2 rounded-full border border-input bg-background px-4 py-2 text-sm
-             text-foreground transition-colors hover:border-primary"
+      class="ios-glass ios-pressable ios-focus-ring flex w-full items-center justify-between gap-2 rounded-full px-4 py-2 text-sm text-foreground"
       @click="toggle"
     >
       <span class="truncate">{{ currentLabel }}</span>
@@ -13,7 +12,7 @@
     </button>
     <div
       v-if="open"
-      class="absolute right-0 z-30 w-full space-y-1 rounded-2xl border border-border bg-card p-2 shadow-lg"
+      class="ios-glass-strong absolute right-0 z-30 w-full space-y-1 rounded-2xl p-2"
       :class="menuPositionClass"
     >
       <button

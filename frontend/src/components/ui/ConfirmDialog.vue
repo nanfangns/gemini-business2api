@@ -2,10 +2,10 @@
   <teleport to="body">
     <div
       v-if="open"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4 backdrop-blur-sm"
       @click.self="$emit('cancel')"
     >
-      <div class="w-full max-w-sm rounded-3xl border border-border bg-card p-6 shadow-2xl">
+      <div class="ios-glass-strong w-full max-w-sm rounded-3xl p-6">
         <p class="text-sm font-semibold text-foreground">{{ title }}</p>
         <p class="mt-2 text-sm text-muted-foreground">{{ message }}</p>
         <div class="mt-6 flex items-center justify-end gap-2">

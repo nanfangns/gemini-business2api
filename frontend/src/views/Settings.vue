@@ -52,9 +52,9 @@
                           <div 
                             @click="item.mode = (item.mode === 'fast' ? 'memory' : 'fast')"
                             class="cursor-pointer select-none rounded-[6px] px-2 py-0.5 text-[10px] font-bold uppercase tracking-tight transition-colors"
-                            :class="item.mode === 'fast' 
-                              ? 'bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 border border-emerald-500/20' 
-                              : 'bg-indigo-500/10 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-400 border border-indigo-500/20'"
+                            :class="item.mode === 'fast'
+                              ? 'bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 border border-emerald-500/20'
+                              : 'bg-primary/10 text-primary dark:bg-primary/20 dark:text-primary border border-primary/20'"
                           >
                             {{ item.mode === 'fast' ? 'Fast' : 'Memory' }}
                           </div>

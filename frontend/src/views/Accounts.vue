@@ -1822,7 +1822,7 @@ const isTaskRunning = computed(() => {
 })
 const taskIndicatorClass = computed(() => {
   if (automationError.value) return 'bg-rose-500'
-  if (isTaskRunning.value) return 'bg-sky-400'
+  if (isTaskRunning.value) return 'bg-primary/70'
 
   const taskSummaries = []
   if (registerTask.value) {
@@ -2255,7 +2255,7 @@ const getTaskStatusIndicatorClass = (task: RegisterTask | LoginTask) => {
 
   // 执行中或等待中 - 蓝色
   if (status === 'running' || status === 'pending') {
-    return 'bg-sky-400'
+    return 'bg-primary/70'
   }
 
   // 任务完成后根据成功失败情况判断
