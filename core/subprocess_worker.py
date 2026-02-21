@@ -6,15 +6,17 @@
 子进程退出后 OS 回收全部浏览器相关内存。
 """
 
-import gc
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
 import time
 from typing import Callable, Optional
+
+from core.memory_utils import trim_process_memory
 
 from core.browser_process_utils import (
     bump_hit,
@@ -29,6 +31,17 @@ logger = logging.getLogger("gemini.subprocess_worker")
 _RUNNER_SCRIPT = os.path.join(os.path.dirname(__file__), "browser_task_runner.py")
 # 默认超时（秒）
 _DEFAULT_TIMEOUT = 300
+
+
+def _build_popen_kwargs() -> dict:
+    """创建子进程隔离参数，确保可按进程组整体回收。"""
+    kwargs: dict = {}
+    if os.name == "posix":
+        # 让 runner 成为新会话 leader，后续可通过 killpg 整组回收。
+        kwargs["start_new_session"] = True
+    elif os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    return kwargs
 
 
 def _close_proc_pipes(proc: subprocess.Popen) -> None:
@@ -74,6 +87,7 @@ def run_browser_in_subprocess(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=os.path.dirname(os.path.dirname(__file__)),  # 项目根目录
+            **_build_popen_kwargs(),
         )
     except Exception as exc:
         return {"success": False, "error": f"子进程启动失败: {exc}"}
@@ -191,8 +205,8 @@ def run_browser_in_subprocess(
         _close_proc_pipes(proc)
         stderr_lines.clear()
         tracked_browser_pids.clear()
-        # 强制垃圾回收，释放 Popen 对象、管道缓冲区等循环引用
-        gc.collect()
+        # 强制垃圾回收，并尝试将空闲堆归还给 OS
+        trim_process_memory("subprocess_worker_finally")
         logger.debug(f"[SUBPROCESS] 管道已关闭，GC 已触发 (PID={child_pid})")
 
 
@@ -383,33 +397,39 @@ def _cleanup_orphan_browsers(
 
 
 def _kill_proc(proc: subprocess.Popen) -> None:
-    """终止子进程（包括所有子孙进程）。"""
+    """终止子进程（优先进程组级强制回收，兜底进程树回收）。"""
     try:
+        # 1) 进程组级回收（必清优先路径）
+        if os.name == "posix":
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGKILL)
+                logger.info(f"[SUBPROCESS] 🧨 已发送 SIGKILL 到进程组 PGID={pgid}")
+            except ProcessLookupError:
+                return
+            except Exception as exc:
+                logger.warning(f"[SUBPROCESS] 进程组回收失败，降级进程树回收: {exc}")
+
+        # 2) 兜底：进程树回收
         import psutil
-        
-        # 1. 获取父进程对象
+
         try:
             parent = psutil.Process(proc.pid)
         except psutil.NoSuchProcess:
             return
 
-        # 2. 获取所有子孙进程（需要在杀父进程之前获取）
         children = parent.children(recursive=True)
-
         if children:
             logger.info(f"[SUBPROCESS] 🧹 中止任务时清理了 {len(children)} 个子孙进程 (浏览器等)")
 
-        # 3. 杀死所有子孙进程
         for child in children:
             try:
                 child.kill()
             except psutil.NoSuchProcess:
                 pass
 
-        # 4. 杀死相关子孙进程后，等待其终结（避免僵尸进程）
         psutil.wait_procs(children, timeout=3)
 
-        # 5. 最后杀死父进程（Python Wrapper）
         proc.kill()
         proc.wait(timeout=5)
 
