@@ -430,16 +430,20 @@ class MultiAccountManager:
 
     async def start_background_cleanup(self):
         """启动后台缓存清理任务（每5分钟执行一次）"""
-        try:
-            while True:
+        while True:
+            try:
                 await asyncio.sleep(300)  # 5分钟
                 async with self._cache_lock:
                     self._clean_expired_cache()
                     self._ensure_cache_size()
-        except asyncio.CancelledError:
-            logger.info("[CACHE] 后台清理任务已停止")
-        except Exception as e:
-            logger.error(f"[CACHE] 后台清理任务异常: {e}")
+                # 顺带清理不在缓存中的过期锁
+                await self._clean_stale_locks()
+            except asyncio.CancelledError:
+                logger.info("[CACHE] 后台清理任务已停止")
+                return  # CancelledError 时真正退出
+            except Exception as e:
+                logger.error(f"[CACHE] 后台清理任务异常（将在60秒后重试）: {e}")
+                await asyncio.sleep(60)  # 异常后等待60秒继续，不退出循环
 
     async def set_session_cache(self, conv_key: str, account_id: str, session_id: str):
         """线程安全地设置会话缓存"""
@@ -467,16 +471,28 @@ class MultiAccountManager:
             if conv_key in self.global_session_cache:
                 self.global_session_cache[conv_key]["updated_at"] = time.time()
 
+    async def _clean_stale_locks(self):
+        """清理不在缓存中的过期锁，防止锁字典无限增长"""
+        async with self._session_locks_lock:
+            if not self._session_locks:
+                return
+            valid_keys = set(self.global_session_cache.keys())
+            keys_to_remove = [k for k in self._session_locks if k not in valid_keys]
+            for k in keys_to_remove:
+                del self._session_locks[k]
+            if keys_to_remove:
+                logger.info(f"[LOCKS] 清理 {len(keys_to_remove)} 个无效锁，剩余 {len(self._session_locks)} 个")
+
     async def acquire_session_lock(self, conv_key: str) -> asyncio.Lock:
         """获取指定对话的锁（用于防止同一对话的并发请求冲突）"""
         async with self._session_locks_lock:
-            # 清理过多的锁（LRU策略：删除不在缓存中的锁）
+            # 超限时进行紧急清理：全部删除不在缓存中的锁
             if len(self._session_locks) > self._session_locks_max_size:
-                # 只保留当前缓存中存在的锁
                 valid_keys = set(self.global_session_cache.keys())
                 keys_to_remove = [k for k in self._session_locks if k not in valid_keys]
-                for k in keys_to_remove[:len(keys_to_remove)//2]:  # 删除一半无效锁
+                for k in keys_to_remove:  # 全部清理无效锁（不再只删一半）
                     del self._session_locks[k]
+                logger.info(f"[LOCKS] 紧急清理 {len(keys_to_remove)} 个无效锁")
 
             if conv_key not in self._session_locks:
                 self._session_locks[conv_key] = asyncio.Lock()
@@ -699,8 +715,11 @@ def reload_accounts(
             "conversation_count": account_mgr.conversation_count
         }
 
-    # 清空会话缓存并重新加载配置
+    # 清空旧 manager 的全部内部数据，加速 GC 回收
     multi_account_mgr.global_session_cache.clear()
+    multi_account_mgr._session_locks.clear()
+    multi_account_mgr.accounts.clear()
+    multi_account_mgr.account_list.clear()
     new_mgr = load_multi_account_config(
         http_client,
         user_agent,

@@ -229,19 +229,19 @@ def clean_global_stats(stats: dict, window_seconds: int = 12 * 3600) -> dict:
                 else:
                     stats["model_request_timestamps"][model] = cleaned
 
-    # 限制访客 IP 记录（LRU 策略：如果超过 5000 个，清理最旧的）
+    # 限制访客 IP 记录（LRU 策略：如果超过 2000 个，清理最旧的一半）
     if "visitor_ips" in stats and isinstance(stats["visitor_ips"], dict):
-        if len(stats["visitor_ips"]) > 5000:
+        if len(stats["visitor_ips"]) > 2000:
             # 按最后访问时间排序
             sorted_ips = sorted(stats["visitor_ips"].items(), key=lambda x: x[1].get("last_seen", 0) if isinstance(x[1], dict) else 0)
-            # 移除最旧的 1000 个
-            for ip, _ in sorted_ips[:1000]:
+            # 移除最旧的一半
+            for ip, _ in sorted_ips[:len(sorted_ips)//2]:
                 del stats["visitor_ips"][ip]
                 
     # 限制最近会话记录
     if "recent_conversations" in stats and isinstance(stats["recent_conversations"], list):
-        if len(stats["recent_conversations"]) > 1000:
-            stats["recent_conversations"] = stats["recent_conversations"][-1000:]
+        if len(stats["recent_conversations"]) > 500:
+            stats["recent_conversations"] = stats["recent_conversations"][-500:]
             
     return stats
 
@@ -879,7 +879,7 @@ else:
 # 全局变量：记录上次检测到的账号更新时间（用于自动刷新检测）
 _last_known_accounts_version: float | None = None
 
-async def global_stats_cleanup_task(interval_seconds: int = 3600):
+async def global_stats_cleanup_task(interval_seconds: int = 1800):
     """后台任务：定期清理全局统计数据，防止内存溢出"""
     logger.info(f"[SYSTEM] 统计数据自动清理任务已启动（间隔: {interval_seconds}秒）")
     while True:
@@ -1000,8 +1000,12 @@ async def auto_refresh_accounts_task():
                     f"[AUTO-REFRESH] 准备切换 manager: old_id={id(old_mgr)} -> new_id={id(new_mgr)}"
                 )
 
-                _set_multi_account_mgr(new_mgr)
+                # 直接 await 异步版本，避免在异步上下文中调用同步包装导致死锁
+                await _set_multi_account_mgr_async(new_mgr)
                 _last_known_accounts_version = db_version
+                # 显式打断旧 manager 引用 + 强制 GC，确保内存完全回落
+                del old_mgr, new_mgr
+                import gc; gc.collect()
                 trim_process_memory("auto_refresh_accounts")
                 after_rss_mb, after_browsers = _collect_memory_and_browser_snapshot()
                 logger.info(
@@ -2435,6 +2439,8 @@ async def chat_impl(
 
         # 记录已失败的账户，避免重复使用
         failed_accounts = set()
+        # Memory 模式下触发 429 后，在切号成功时向用户提示“全新记忆”
+        memory_reset_notice_pending = False
 
         while retry_count <= max_retries:
             # ------------------------------------------------------------------
@@ -2488,6 +2494,16 @@ async def chat_impl(
                     account_manager = new_account
                     current_retry_mode = True
                     current_file_ids = []  # 清空 ID，强制重新上传
+
+                    if memory_reset_notice_pending:
+                        notice_text = "⚠️ 检测到上一账号触发 429 限流，已切换新账号并重置为全新记忆上下文。\n\n"
+                        if req.stream:
+                            notice_chunk = create_chunk(chat_id, created_time, req.model, {"content": notice_text}, None)
+                            yield f"data: {notice_chunk}\n\n"
+                        else:
+                            current_text = notice_text + current_text
+                        logger.warning(f"[CHAT] [req_{request_id}] 已向客户端发送 429 全新记忆提示")
+                        memory_reset_notice_pending = False
 
                 except Exception as create_err:
                     error_type = type(create_err).__name__
@@ -2581,6 +2597,19 @@ async def chat_impl(
                     account_manager.handle_http_error(status_code, str(e.detail) if hasattr(e, 'detail') else "", request_id, quota_type)
                 else:
                     account_manager.handle_non_http_error("聊天请求", request_id)
+
+                # Memory 模式下遇到 429：彻底销毁当前上下文，确保下一条消息重新选账号建新会话
+                if (
+                    is_http_exception
+                    and status_code == 429
+                    and key_config.mode == ApiKeyMode.MEMORY
+                ):
+                    await multi_account_mgr.clear_session_cache(session_cache_key)
+                    await binding_mgr.remove_binding(chat_id_for_binding)
+                    memory_reset_notice_pending = True
+                    logger.warning(
+                        f"[CHAT] [req_{request_id}] Memory 模式触发 429，已清理会话缓存并解绑账号 (chat={chat_id_for_binding[:8]}...)"
+                    )
 
                 retry_count += 1
 
@@ -2871,6 +2900,7 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
         except ValueError as e:
             uptime_tracker.record_request(model_name, False)
             logger.error(f"[API] [{account_manager.config.account_id}] [req_{request_id}] JSON解析失败: {str(e)}")
+            logger.warning(f"[API] [{account_manager.config.account_id}] [req_{request_id}] 响应中断: {time.time() - start_time:.2f}秒")
             # 发送错误块给前端
             error_chunk = create_chunk(chat_id, created_time, model_name, {"content": f"\n\n[System Error] Response parsing failed: {str(e)}"}, None)
             yield f"data: {error_chunk}\n\n"
@@ -2878,6 +2908,7 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
             error_type = type(e).__name__
             uptime_tracker.record_request(model_name, False)
             logger.error(f"[API] [{account_manager.config.account_id}] [req_{request_id}] 流处理错误 ({error_type}): {str(e)}")
+            logger.warning(f"[API] [{account_manager.config.account_id}] [req_{request_id}] 响应中断: {time.time() - start_time:.2f}秒")
             # 发送错误块给前端
             error_chunk = create_chunk(chat_id, created_time, model_name, {"content": f"\n\n[System Error] Stream interrupted: {str(e)}"}, None)
             yield f"data: {error_chunk}\n\n"
