@@ -67,17 +67,6 @@ class GeminiAutomation:
             except Exception:
                 pass
 
-    def _cleanup_user_data(self, user_data_dir: str) -> None:
-        """清理临时用户数据目录"""
-        if not user_data_dir:
-            return
-        try:
-            import shutil
-            shutil.rmtree(user_data_dir, ignore_errors=True)
-            self._log("info", f"🧹 已清理临时目录: {user_data_dir}")
-        except Exception as e:
-            self._log("warning", f"⚠️ 清理临时目录失败: {e}")
-
     def login_and_extract(self, email: str, mail_client) -> dict:
         """执行登录并提取配置（加全局锁）"""
         self._log("info", "🔒 正在等待浏览器资源锁...")
@@ -728,25 +717,35 @@ class GeminiAutomation:
                 pass
 
     def _cleanup_user_data(self, user_data_dir: Optional[str]) -> None:
-        """清理浏览器用户数据目录"""
+        """幂等清理浏览器用户数据目录：允许重复调用，失败时按固定间隔重试。"""
         if not user_data_dir:
             return
-        
-        # 尝试多次清理，应对文件锁
+
+        # 尝试多次清理，应对文件锁或延迟释放句柄
         for i in range(5):
             try:
                 import shutil
                 if os.path.exists(user_data_dir):
                     shutil.rmtree(user_data_dir, ignore_errors=True)
-                
-                # 如果目录仍然存在，说明清理失败
+
+                # 如果目录仍然存在，说明清理尚未完成
                 if os.path.exists(user_data_dir):
+                    self._log(
+                        "warning",
+                        f"⚠️ 临时目录仍存在，准备第 {i + 1}/5 次重试: {user_data_dir}",
+                    )
                     time.sleep(1)
                     continue
-                else:
-                    break
-            except Exception:
+                self._log("info", f"🧹 已清理临时目录: {user_data_dir}")
+                break
+            except Exception as e:
+                self._log(
+                    "warning",
+                    f"⚠️ 清理临时目录异常，第 {i + 1}/5 次重试: {e}",
+                )
                 time.sleep(1)
+        else:
+            self._log("warning", f"⚠️ 临时目录清理失败，已达到重试上限: {user_data_dir}")
 
     @staticmethod
     def _get_ua() -> str:
