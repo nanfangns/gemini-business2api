@@ -569,6 +569,18 @@ def _set_multi_account_mgr(new_mgr):
     # 兼容线程池回调入口：同步包装为主循环中的异步串行切换
     if main_loop and not main_loop.is_closed():
         try:
+            # 如果当前就在主事件循环线程，不能阻塞等待 future.result()，
+            # 否则会卡住 loop，导致真正的切换协程无法执行。
+            running_loop = None
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+
+            if running_loop is main_loop:
+                main_loop.create_task(_set_multi_account_mgr_async(new_mgr))
+                return
+
             fut = asyncio.run_coroutine_threadsafe(_set_multi_account_mgr_async(new_mgr), main_loop)
             fut.result(timeout=15)
         except Exception as e:
