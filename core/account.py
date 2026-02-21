@@ -67,7 +67,6 @@ class AccountConfig:
     mail_verify_ssl: Optional[bool] = None
     mail_domain: Optional[str] = None
     mail_api_key: Optional[str] = None
-    account_expires_at: Optional[str] = None  # 账号过期时间 (格式: "2025-12-23 10:59:21")
 
     def get_remaining_hours(self) -> Optional[float]:
         """计算账户剩余小时数"""
@@ -85,20 +84,6 @@ class AccountConfig:
             # 计算剩余时间
             remaining = (expire_time - now).total_seconds() / 3600
             return remaining
-        except Exception:
-            return None
-
-    def get_account_remaining_days(self) -> Optional[float]:
-        """计算账号剩余有效期（天数）"""
-        if not self.account_expires_at:
-            return None
-        try:
-            beijing_tz = timezone(timedelta(hours=8))
-            expire_time = datetime.strptime(self.account_expires_at, "%Y-%m-%d %H:%M:%S")
-            expire_time = expire_time.replace(tzinfo=beijing_tz)
-            now = datetime.now(beijing_tz)
-            remaining_days = (expire_time - now).total_seconds() / 86400
-            return max(0, remaining_days)
         except Exception:
             return None
 
@@ -430,20 +415,16 @@ class MultiAccountManager:
 
     async def start_background_cleanup(self):
         """启动后台缓存清理任务（每5分钟执行一次）"""
-        while True:
-            try:
+        try:
+            while True:
                 await asyncio.sleep(300)  # 5分钟
                 async with self._cache_lock:
                     self._clean_expired_cache()
                     self._ensure_cache_size()
-                # 顺带清理不在缓存中的过期锁
-                await self._clean_stale_locks()
-            except asyncio.CancelledError:
-                logger.info("[CACHE] 后台清理任务已停止")
-                return  # CancelledError 时真正退出
-            except Exception as e:
-                logger.error(f"[CACHE] 后台清理任务异常（将在60秒后重试）: {e}")
-                await asyncio.sleep(60)  # 异常后等待60秒继续，不退出循环
+        except asyncio.CancelledError:
+            logger.info("[CACHE] 后台清理任务已停止")
+        except Exception as e:
+            logger.error(f"[CACHE] 后台清理任务异常: {e}")
 
     async def set_session_cache(self, conv_key: str, account_id: str, session_id: str):
         """线程安全地设置会话缓存"""
@@ -471,28 +452,16 @@ class MultiAccountManager:
             if conv_key in self.global_session_cache:
                 self.global_session_cache[conv_key]["updated_at"] = time.time()
 
-    async def _clean_stale_locks(self):
-        """清理不在缓存中的过期锁，防止锁字典无限增长"""
-        async with self._session_locks_lock:
-            if not self._session_locks:
-                return
-            valid_keys = set(self.global_session_cache.keys())
-            keys_to_remove = [k for k in self._session_locks if k not in valid_keys]
-            for k in keys_to_remove:
-                del self._session_locks[k]
-            if keys_to_remove:
-                logger.info(f"[LOCKS] 清理 {len(keys_to_remove)} 个无效锁，剩余 {len(self._session_locks)} 个")
-
     async def acquire_session_lock(self, conv_key: str) -> asyncio.Lock:
         """获取指定对话的锁（用于防止同一对话的并发请求冲突）"""
         async with self._session_locks_lock:
-            # 超限时进行紧急清理：全部删除不在缓存中的锁
+            # 清理过多的锁（LRU策略：删除不在缓存中的锁）
             if len(self._session_locks) > self._session_locks_max_size:
+                # 只保留当前缓存中存在的锁
                 valid_keys = set(self.global_session_cache.keys())
                 keys_to_remove = [k for k in self._session_locks if k not in valid_keys]
-                for k in keys_to_remove:  # 全部清理无效锁（不再只删一半）
+                for k in keys_to_remove[:len(keys_to_remove)//2]:  # 删除一半无效锁
                     del self._session_locks[k]
-                logger.info(f"[LOCKS] 紧急清理 {len(keys_to_remove)} 个无效锁")
 
             if conv_key not in self._session_locks:
                 self._session_locks[conv_key] = asyncio.Lock()
@@ -679,7 +648,6 @@ def load_multi_account_config(
             mail_client_id=acc.get("mail_client_id"),
             mail_refresh_token=acc.get("mail_refresh_token"),
             mail_tenant=acc.get("mail_tenant"),
-            account_expires_at=acc.get("account_expires_at"),
         )
 
         # 检查账户是否已过期（已过期也加载到管理面板）
@@ -715,11 +683,8 @@ def reload_accounts(
             "conversation_count": account_mgr.conversation_count
         }
 
-    # 清空旧 manager 的全部内部数据，加速 GC 回收
+    # 清空会话缓存并重新加载配置
     multi_account_mgr.global_session_cache.clear()
-    multi_account_mgr._session_locks.clear()
-    multi_account_mgr.accounts.clear()
-    multi_account_mgr.account_list.clear()
     new_mgr = load_multi_account_config(
         http_client,
         user_agent,

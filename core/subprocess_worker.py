@@ -15,31 +15,12 @@ import threading
 import time
 from typing import Callable, Optional
 
-from core.memory_utils import trim_process_memory
-
-from core.browser_process_utils import (
-    bump_hit,
-    has_automation_marker,
-    init_cleanup_stats,
-    is_browser_related_process,
-)
-
 logger = logging.getLogger("gemini.subprocess_worker")
 
 # 子进程脚本路径
 _RUNNER_SCRIPT = os.path.join(os.path.dirname(__file__), "browser_task_runner.py")
 # 默认超时（秒）
 _DEFAULT_TIMEOUT = 300
-
-
-def _close_proc_pipes(proc: subprocess.Popen) -> None:
-    """安全关闭子进程的所有管道，释放内核缓冲区内存。"""
-    for pipe in (proc.stdin, proc.stdout, proc.stderr):
-        if pipe:
-            try:
-                pipe.close()
-            except Exception:
-                pass
 
 
 def run_browser_in_subprocess(
@@ -66,10 +47,6 @@ def run_browser_in_subprocess(
     except (TypeError, ValueError) as exc:
         return {"success": False, "error": f"参数序列化失败: {exc}"}
 
-    # 传入隐形环境变量标
-    env_copy = os.environ.copy()
-    env_copy["GEMINI_AUTOMATION_MARKER"] = "1"
-
     # 启动子进程
     python_exe = sys.executable
     try:
@@ -79,7 +56,7 @@ def run_browser_in_subprocess(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=os.path.dirname(os.path.dirname(__file__)),  # 项目根目录
-            env=env_copy,
+            env=os.environ.copy(),
         )
     except Exception as exc:
         return {"success": False, "error": f"子进程启动失败: {exc}"}
@@ -87,119 +64,83 @@ def run_browser_in_subprocess(
     child_pid = proc.pid
     logger.info(f"[SUBPROCESS] 子进程已启动 (PID={child_pid})")
 
-    # 后台线程实时读取 stderr 日志用的缓冲区
+    # 写入参数到 stdin
+    try:
+        proc.stdin.write(params_json.encode("utf-8"))
+        proc.stdin.close()
+    except Exception as exc:
+        _kill_proc(proc)
+        return {"success": False, "error": f"参数写入失败: {exc}"}
+
+    # 后台线程：实时读取 stderr 日志
     stderr_lines = []
-    tracked_browser_pids = set()
-    cleanup_reason = "unknown"
+    log_thread = threading.Thread(
+        target=_read_stderr_logs,
+        args=(proc, log_callback, stderr_lines),
+        daemon=True,
+    )
+    log_thread.start()
+
+    # 等待子进程完成（带超时和取消检查）
+    start_time = time.monotonic()
+    result = None
 
     try:
-        # 写入参数到 stdin
-        try:
-            proc.stdin.write(params_json.encode("utf-8"))
-            proc.stdin.close()
-        except Exception as exc:
-            cleanup_reason = "stdin_write_failed"
-            _kill_proc(proc)
-            return {"success": False, "error": f"参数写入失败: {exc}"}
+        while True:
+            elapsed = time.monotonic() - start_time
 
-        # 后台线程：实时读取 stderr 日志
-        log_thread = threading.Thread(
-            target=_read_stderr_logs,
-            args=(proc, log_callback, stderr_lines),
-            daemon=True,
-        )
-        log_thread.start()
+            # 检查超时
+            if elapsed > timeout:
+                log_callback("error", f"⏰ 浏览器子进程超时 ({timeout}s)，正在终止...")
+                _kill_proc(proc)
+                return {"success": False, "error": f"浏览器操作超时 ({timeout}s)"}
 
-        # 等待子进程完成（带超时和取消检查）
-        start_time = time.monotonic()
-        last_scan = 0.0
+            # 检查取消
+            if cancel_check and cancel_check():
+                log_callback("warning", "🚫 收到取消请求，正在终止浏览器子进程...")
+                _kill_proc(proc)
+                return {"success": False, "error": "任务已取消"}
 
-        try:
-            while True:
-                elapsed = time.monotonic() - start_time
+            # 检查子进程是否结束
+            retcode = proc.poll()
+            if retcode is not None:
+                break
 
-                # 定期采样子进程树中的浏览器 PID，便于子进程退出后兜底清理
-                if elapsed - last_scan >= 0.5:
-                    tracked_browser_pids.update(_collect_browser_descendants(child_pid))
-                    last_scan = elapsed
+            # 短暂等待
+            time.sleep(0.3)
 
-                # 检查超时
-                if elapsed > timeout:
-                    cleanup_reason = "timeout"
-                    log_callback("error", f"⏰ 浏览器子进程超时 ({timeout}s)，正在终止...")
-                    _kill_proc(proc)
-                    return {"success": False, "error": f"浏览器操作超时 ({timeout}s)"}
+    except Exception as exc:
+        _kill_proc(proc)
+        return {"success": False, "error": f"子进程管理异常: {exc}"}
 
-                # 检查取消
-                if cancel_check and cancel_check():
-                    cleanup_reason = "cancel"
-                    log_callback("warning", "🚫 收到取消请求，正在终止浏览器子进程...")
-                    _kill_proc(proc)
-                    return {"success": False, "error": "任务已取消"}
+    # 等待日志线程结束
+    log_thread.join(timeout=5)
 
-                # 检查子进程是否结束
-                retcode = proc.poll()
-                if retcode is not None:
-                    cleanup_reason = "normal_exit"
-                    break
+    # 读取 stdout 获取结果
+    try:
+        stdout_data = proc.stdout.read().decode("utf-8", errors="replace")
+    except Exception:
+        stdout_data = ""
 
-                # 短暂等待
-                time.sleep(0.3)
+    logger.info(f"[SUBPROCESS] 子进程已结束 (PID={child_pid}, exitcode={proc.returncode})")
 
-        except Exception as exc:
-            cleanup_reason = "manage_exception"
-            _kill_proc(proc)
-            return {"success": False, "error": f"子进程管理异常: {exc}"}
+    # 解析 RESULT: 行
+    for line in stdout_data.splitlines():
+        if line.startswith("RESULT:"):
+            try:
+                result = json.loads(line[7:])
+                return result
+            except json.JSONDecodeError as exc:
+                return {"success": False, "error": f"结果解析失败: {exc}"}
 
-        # 等待日志线程结束
-        log_thread.join(timeout=5)
+    # 没有找到 RESULT 行
+    if proc.returncode != 0:
+        # 收集 stderr 中非 LOG: 开头的行作为错误信息
+        error_lines = [l for l in stderr_lines if not l.startswith("LOG:")]
+        error_msg = "\n".join(error_lines[-10:]) if error_lines else f"exitcode={proc.returncode}"
+        return {"success": False, "error": f"子进程异常退出: {error_msg}"}
 
-        # 子进程已退出，统一在 finally 执行兜底清理（覆盖正常/超时/取消/异常所有路径）
-
-        # 读取 stdout 获取结果
-        try:
-            stdout_data = proc.stdout.read().decode("utf-8", errors="replace")
-        except Exception:
-            stdout_data = ""
-
-        logger.info(f"[SUBPROCESS] 子进程已结束 (PID={child_pid}, exitcode={proc.returncode})")
-
-        # 解析 RESULT: 行
-        for line in stdout_data.splitlines():
-            if line.startswith("RESULT:"):
-                try:
-                    return json.loads(line[7:])
-                except json.JSONDecodeError as exc:
-                    return {"success": False, "error": f"结果解析失败: {exc}"}
-
-        # 没有找到 RESULT 行
-        if proc.returncode != 0:
-            error_lines = [l for l in stderr_lines if not l.startswith("LOG:")]
-            error_msg = "\n".join(error_lines[-10:]) if error_lines else f"exitcode={proc.returncode}"
-            return {"success": False, "error": f"子进程异常退出: {error_msg}"}
-
-        return {"success": False, "error": "子进程未返回结果"}
-
-    finally:
-        # 统一兜底清理：覆盖正常/超时/取消/异常所有路径
-        cleanup_stats = _cleanup_orphan_browsers(
-            child_pid,
-            tracked_browser_pids,
-            reason=cleanup_reason,
-        )
-        if cleanup_stats.get("remaining_after_cleanup", 0) > 0:
-            logger.warning(
-                "[SUBPROCESS] ⚠️ 清理后仍有浏览器残留: "
-                f"{cleanup_stats['remaining_after_cleanup']} (reason={cleanup_reason})"
-            )
-
-        # 【关键】无论何种返回路径，都必须关闭管道并释放内存
-        _close_proc_pipes(proc)
-        stderr_lines.clear()
-        tracked_browser_pids.clear()
-        # 强制垃圾回收，并尝试将空闲堆归还给 OS
-        trim_process_memory("subprocess_worker_finally")
-        logger.debug(f"[SUBPROCESS] 管道已关闭，GC 已触发 (PID={child_pid})")
+    return {"success": False, "error": "子进程未返回结果"}
 
 
 def _read_stderr_logs(
@@ -216,8 +157,6 @@ def _read_stderr_logs(
                 continue
 
             stderr_lines.append(line)
-            if len(stderr_lines) > 200:
-                del stderr_lines[:-200]
 
             if line.startswith("LOG:"):
                 # 格式: LOG:level:message
@@ -232,225 +171,10 @@ def _read_stderr_logs(
         pass
 
 
-def _collect_browser_descendants(root_pid: int) -> set[int]:
-    """采集指定进程树中的浏览器子孙 PID。"""
-    try:
-        import psutil
-
-        root = psutil.Process(root_pid)
-        descendants = root.children(recursive=True)
-    except Exception:
-        return set()
-
-    browser_pids: set[int] = set()
-    for proc in descendants:
-        try:
-            matched, _ = is_browser_related_process(proc.name(), proc.cmdline())
-            if matched:
-                browser_pids.add(proc.pid)
-        except Exception:
-            continue
-    return browser_pids
-
-
-def _cleanup_orphan_browsers(
-    child_pid: int,
-    tracked_browser_pids: Optional[set[int]] = None,
-    reason: str = "unknown",
-) -> dict:
-    """主进程侧兜底清理：子进程退出后扫除可能残留的浏览器进程。"""
-    if tracked_browser_pids is None:
-        tracked_browser_pids = set()
-
-    stats = init_cleanup_stats(reason)
-
-    try:
-        import psutil
-
-        # 1) 精确清理：优先清理采样到的浏览器 PID（子进程退出后即使被系统接管也能清）
-        for pid in list(tracked_browser_pids):
-            try:
-                proc = psutil.Process(pid)
-                matched, process_type = is_browser_related_process(proc.name(), proc.cmdline())
-                if matched:
-                    stats["tracked_candidates"] += 1
-                    bump_hit(stats, "tracked", process_type, "candidates")
-                    logger.info(
-                        "[SUBPROCESS] 🔪 清理残留浏览器进程(跟踪命中): "
-                        f"PID={pid} Name={proc.name().lower()} Type={process_type}"
-                    )
-                    proc.kill()
-                    try:
-                        proc.wait(timeout=3)
-                    except psutil.TimeoutExpired:
-                        pass
-                    stats["tracked_killed"] += 1
-                    bump_hit(stats, "tracked", process_type, "killed")
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                pass
-
-        # 2) 回退清理：循环扫描当前主进程可见的子孙进程，尽量打干净
-        max_rounds = 3
-        for round_idx in range(max_rounds):
-            stats["fallback_rounds"] = round_idx + 1
-            current = psutil.Process()
-            children = current.children(recursive=True)
-            round_killed = 0
-            for child in children:
-                try:
-                    matched, process_type = is_browser_related_process(child.name(), child.cmdline())
-                    if matched:
-                        stats["fallback_candidates"] += 1
-                        bump_hit(stats, "fallback", process_type, "candidates")
-                        logger.info(
-                            "[SUBPROCESS] 🔪 清理残留浏览器进程: "
-                            f"PID={child.pid} Name={child.name().lower()} Type={process_type}"
-                        )
-                        child.kill()
-                        try:
-                            child.wait(timeout=3)
-                        except psutil.TimeoutExpired:
-                            pass
-                        stats["fallback_killed"] += 1
-                        bump_hit(stats, "fallback", process_type, "killed")
-                        round_killed += 1
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    pass
-
-            # 当前轮次没有命中可清理目标，提前退出
-            if round_killed == 0:
-                break
-
-            time.sleep(0.2)
-
-        # 3) 全局兜底清理：如果在 Windows 下系统脱离了进程树管理，采用命令行特征匹配清理和环境变量标记
-        try:
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    name = (proc.info.get('name') or "").lower()
-                    cmdline = proc.info.get('cmdline') or []
-                    matched, process_type = is_browser_related_process(name, cmdline)
-
-                    # 检查环境变量
-                    has_env_marker = False
-                    try:
-                        env = proc.environ()
-                        if env and env.get("GEMINI_AUTOMATION_MARKER") == "1":
-                            has_env_marker = True
-                    except (psutil.AccessDenied, psutil.ZombieProcess, OSError):
-                        pass
-                        
-                    cmdline_str = " ".join(cmdline).lower()
-                    has_cmd_marker = has_automation_marker(cmdline_str)
-
-                    if (matched and has_cmd_marker) or has_env_marker:
-                        if not matched and has_env_marker:
-                            process_type = "conhost" if "conhost" in name else "marked_process"
-                            
-                        stats["global_candidates"] += 1
-                        bump_hit(stats, "global", process_type, "candidates")
-                        logger.info(
-                            "[SUBPROCESS] 🔪 全局扫描命中残留浏览器进程: "
-                            f"PID={proc.pid} Name={name} Type={process_type} EnvMarker={has_env_marker}"
-                        )
-                        proc.kill()
-                        try:
-                            proc.wait(timeout=3)
-                        except psutil.TimeoutExpired:
-                            pass
-                        stats["global_killed"] += 1
-                        bump_hit(stats, "global", process_type, "killed")
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    continue
-        except Exception as e:
-            logger.warning(f"[SUBPROCESS] 全局扫描清理出现异常: {e}")
-
-        # 4) 复查：只统计带有特定自动化标识的剩余 Chromium 进程数
-        try:
-            remaining = 0
-            for proc in psutil.process_iter(['name', 'cmdline']):
-                try:
-                    name = (proc.info.get('name') or "").lower()
-                    cmdline = proc.info.get('cmdline') or []
-                    cmdline_str = " ".join(cmdline).lower()
-                    matched, process_type = is_browser_related_process(name, cmdline)
-                    
-                    has_env_marker = False
-                    try:
-                        env = proc.environ()
-                        if env and env.get("GEMINI_AUTOMATION_MARKER") == "1":
-                            has_env_marker = True
-                    except (psutil.AccessDenied, psutil.ZombieProcess, OSError):
-                        pass
-                        
-                    if (matched and has_automation_marker(cmdline_str)) or has_env_marker:
-                        remaining += 1
-                        if not matched and has_env_marker:
-                            process_type = "conhost" if "conhost" in name else "marked_process"
-                        bump_hit(stats, "global", process_type, "remaining")
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    pass
-            stats["remaining_after_cleanup"] = remaining
-        except Exception:
-            pass
-
-        total_killed = stats["tracked_killed"] + stats["fallback_killed"] + stats["global_killed"]
-        if total_killed or stats["remaining_after_cleanup"]:
-            hit_summary = ", ".join(
-                f"{key}=kill {item['killed']}/{item['candidates']}, remaining {item['remaining']}"
-                for key, item in sorted(stats["hits"].items())
-            )
-            logger.info(
-                "[SUBPROCESS] 兜底清理统计: "
-                f"reason={reason}, tracked={stats['tracked_killed']}/{stats['tracked_candidates']}, "
-                f"fallback={stats['fallback_killed']}/{stats['fallback_candidates']}, "
-                f"global={stats['global_killed']}/{stats['global_candidates']}, "
-                f"remaining={stats['remaining_after_cleanup']}, rounds={stats['fallback_rounds']}"
-                + (f", by_type=[{hit_summary}]" if hit_summary else "")
-            )
-
-    except Exception as e:
-        logger.warning(f"[SUBPROCESS] 兜底清理异常: {e}")
-
-    return stats
-
-
 def _kill_proc(proc: subprocess.Popen) -> None:
-    """终止子进程（包括所有子孙进程）。"""
+    """终止子进程。"""
     try:
-        import psutil
-        
-        # 1. 获取父进程对象
-        try:
-            parent = psutil.Process(proc.pid)
-        except psutil.NoSuchProcess:
-            return
-
-        # 2. 获取所有子孙进程（需要在杀父进程之前获取）
-        children = parent.children(recursive=True)
-
-        if children:
-            logger.info(f"[SUBPROCESS] 🧹 中止任务时清理了 {len(children)} 个子孙进程 (浏览器等)")
-
-        # 3. 杀死所有子孙进程
-        for child in children:
-            try:
-                child.kill()
-            except psutil.NoSuchProcess:
-                pass
-
-        # 4. 杀死相关子孙进程后，等待其终结（避免僵尸进程）
-        psutil.wait_procs(children, timeout=3)
-
-        # 5. 最后杀死父进程（Python Wrapper）
         proc.kill()
         proc.wait(timeout=5)
-
-    except Exception as e:
-        # 降级处理：直接尝试杀死父进程
-        logger.warning(f"[SUBPROCESS] 进程树清理失败 ({e})，尝试直接 Kill")
-        try:
-            proc.kill()
-            proc.wait(timeout=5)
-        except Exception:
-            pass
+    except Exception:
+        pass
