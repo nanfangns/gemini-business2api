@@ -15,7 +15,6 @@ from pydantic import BaseModel
 from util.streaming_parser import parse_json_array_stream_async
 from collections import deque
 from threading import Lock
-import psutil
 
 # ---------- 数据目录配置 ----------
 # 自动检测环境：HF Spaces Pro 使用 /data，本地使用 ./data
@@ -56,8 +55,6 @@ from core.message import (
     strip_to_last_user_message,
     extract_text_from_content
 )
-from core.memory_utils import trim_process_memory
-from core.browser_process_utils import has_automation_marker, is_browser_related_process
 from core.session_binding import (
     generate_chat_id,
     extract_chat_id,
@@ -101,17 +98,9 @@ from core.outbound_proxy import (
 )
 
 # 模型到配额类型的映射
-# 所有文本模型默认映射到 "text"，确保 429 走 quota 级冷却而非全局冷却
 MODEL_TO_QUOTA_TYPE = {
     "gemini-imagen": "images",
-    "gemini-veo": "videos",
-    # 文本模型统一映射为 text 配额
-    "gemini-auto": "text",
-    "gemini-2.5-flash": "text",
-    "gemini-2.5-pro": "text",
-    "gemini-3-flash-preview": "text",
-    "gemini-3-pro-preview": "text",
-    "gemini-3.1-pro-preview": "text",
+    "gemini-veo": "videos"
 }
 
 # ---------- 日志配置 ----------
@@ -229,19 +218,19 @@ def clean_global_stats(stats: dict, window_seconds: int = 12 * 3600) -> dict:
                 else:
                     stats["model_request_timestamps"][model] = cleaned
 
-    # 限制访客 IP 记录（LRU 策略：如果超过 2000 个，清理最旧的一半）
+    # 限制访客 IP 记录（LRU 策略：如果超过 5000 个，清理最旧的）
     if "visitor_ips" in stats and isinstance(stats["visitor_ips"], dict):
-        if len(stats["visitor_ips"]) > 2000:
+        if len(stats["visitor_ips"]) > 5000:
             # 按最后访问时间排序
             sorted_ips = sorted(stats["visitor_ips"].items(), key=lambda x: x[1].get("last_seen", 0) if isinstance(x[1], dict) else 0)
-            # 移除最旧的一半
-            for ip, _ in sorted_ips[:len(sorted_ips)//2]:
+            # 移除最旧的 1000 个
+            for ip, _ in sorted_ips[:1000]:
                 del stats["visitor_ips"][ip]
                 
     # 限制最近会话记录
     if "recent_conversations" in stats and isinstance(stats["recent_conversations"], list):
-        if len(stats["recent_conversations"]) > 500:
-            stats["recent_conversations"] = stats["recent_conversations"][-500:]
+        if len(stats["recent_conversations"]) > 1000:
+            stats["recent_conversations"] = stats["recent_conversations"][-1000:]
             
     return stats
 
@@ -411,8 +400,7 @@ MODEL_MAPPING = {
     "gemini-2.5-flash": "gemini-2.5-flash",
     "gemini-2.5-pro": "gemini-2.5-pro",
     "gemini-3-flash-preview": "gemini-3-flash-preview",
-    "gemini-3-pro-preview": "gemini-3-pro-preview",
-    "gemini-3.1-pro-preview": "gemini-3.1-pro-preview"
+    "gemini-3-pro-preview": "gemini-3-pro-preview"
 }
 
 # ---------- HTTP 客户端 ----------
@@ -500,99 +488,14 @@ multi_account_mgr = load_multi_account_config(
 # ---------- 自动注册/刷新服务 ----------
 register_service = None
 login_service = None
-# 全局缓存清理任务句柄（确保同一时刻仅有一个）
-cache_cleanup_task: Optional[asyncio.Task] = None
-auto_refresh_task: Optional[asyncio.Task] = None
-global_stats_task: Optional[asyncio.Task] = None
-media_cleanup_task_handle: Optional[asyncio.Task] = None
-login_polling_task: Optional[asyncio.Task] = None
-_manager_swap_lock = asyncio.Lock()
-
-
-def _collect_memory_and_browser_snapshot() -> tuple[float, int]:
-    """采集当前进程 RSS(MB) 与自动化标记浏览器残留数量。"""
-    rss_mb = 0.0
-    try:
-        rss_mb = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
-    except Exception:
-        pass
-
-    browser_left = 0
-    try:
-        for proc in psutil.process_iter(["name", "cmdline"]):
-            try:
-                name = (proc.info.get("name") or "").lower()
-                cmdline = proc.info.get("cmdline") or []
-                cmdline_str = " ".join(cmdline).lower()
-                matched, _ptype = is_browser_related_process(name, cmdline)
-                if matched and has_automation_marker(cmdline_str):
-                    browser_left += 1
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-    except Exception:
-        pass
-
-    return rss_mb, browser_left
-
-async def _restart_cache_cleanup_task(new_mgr):
-    """重启缓存清理任务：先停旧任务，再启动新任务。"""
-    global cache_cleanup_task
-
-    if cache_cleanup_task and not cache_cleanup_task.done():
-        cache_cleanup_task.cancel()
-        try:
-            await cache_cleanup_task
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.warning(f"[SYSTEM] 停止旧缓存清理任务异常: {e}")
-
-    cache_cleanup_task = asyncio.create_task(new_mgr.start_background_cleanup())
-    logger.info(f"[SYSTEM] 后台缓存清理任务已重启 (task={id(cache_cleanup_task)})")
-
-
-async def _set_multi_account_mgr_async(new_mgr):
-    """串行切换全局 manager，并等待缓存清理任务重启完成。"""
-    global multi_account_mgr
-
-    async with _manager_swap_lock:
-        multi_account_mgr = new_mgr
-        if register_service:
-            register_service.multi_account_mgr = new_mgr
-        if login_service:
-            login_service.multi_account_mgr = new_mgr
-
-        await _restart_cache_cleanup_task(new_mgr)
-
 
 def _set_multi_account_mgr(new_mgr):
-    # 兼容多种调用场景：异步上下文（注册/登录服务）或子线程回调
-    # 关键点：检测是否已在事件循环中，避免死锁
-    if not main_loop or main_loop.is_closed():
-        try:
-            logger.warning(f"[SYSTEM] main_loop 未就绪 (IsNone={main_loop is None}), 尝试直接 create_task")
-            asyncio.create_task(_set_multi_account_mgr_async(new_mgr))
-        except RuntimeError as e:
-            logger.error(f"[SYSTEM] 无法启动缓存清理任务: {e}")
-        return
-
-    # 检测是否已在主事件循环线程上（异步上下文中调用）
-    try:
-        running_loop = asyncio.get_running_loop()
-    except RuntimeError:
-        running_loop = None
-
-    if running_loop is main_loop:
-        # 已在主事件循环线程上，直接 create_task（不阻塞）
-        asyncio.create_task(_set_multi_account_mgr_async(new_mgr))
-        logger.info("[SYSTEM] 缓存清理任务已通过 create_task 调度")
-    else:
-        # 从子线程调用，用 run_coroutine_threadsafe + 阻塞等待
-        try:
-            fut = asyncio.run_coroutine_threadsafe(_set_multi_account_mgr_async(new_mgr), main_loop)
-            fut.result(timeout=15)
-        except Exception as e:
-            logger.error(f"[SYSTEM] 调度缓存清理任务失败: {e}")
+    global multi_account_mgr
+    multi_account_mgr = new_mgr
+    if register_service:
+        register_service.multi_account_mgr = new_mgr
+    if login_service:
+        login_service.multi_account_mgr = new_mgr
 
 def _get_global_stats():
     return global_stats
@@ -683,114 +586,8 @@ def process_media(data: bytes, mime: str, chat_id: str, file_id: str, base_url: 
     else:
         return process_image(data, mime, chat_id, file_id, base_url, idx, request_id, account_id)
 
-from contextlib import asynccontextmanager
-
-
-# 全局事件循环引用（用于跨线程调度任务）
-main_loop: asyncio.AbstractEventLoop = None
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
-    global global_stats, main_loop, cache_cleanup_task
-    global auto_refresh_task, global_stats_task, media_cleanup_task_handle, login_polling_task
-    
-    # 获取并保存主事件循环引用
-    try:
-        main_loop = asyncio.get_running_loop()
-        logger.info(f"[SYSTEM] 主事件循环已捕获: {id(main_loop)}")
-    except RuntimeError as e:
-        logger.error(f"[SYSTEM] 无法在 lifespan 中捕获事件循环: {e}")
-    
-    # --- Startup ---
-    # 文件迁移逻辑
-    old_accounts = "accounts.json"
-    if os.path.exists(old_accounts) and not os.path.exists(ACCOUNTS_FILE):
-        try:
-            shutil.copy(old_accounts, ACCOUNTS_FILE)
-            logger.info(f"{logger_prefix} 已迁移 {old_accounts} -> {ACCOUNTS_FILE}")
-        except Exception as e:
-            logger.warning(f"{logger_prefix} 文件迁移失败: {e}")
-
-    # 加载统计数据
-    global_stats = await load_stats()
-    # 初始化统计数据默认值
-    for key in ["request_timestamps", "failure_timestamps", "rate_limit_timestamps", "recent_conversations"]:
-        global_stats.setdefault(key, [])
-    global_stats.setdefault("model_request_timestamps", {})
-    
-    # 修复旧数据格式
-    if isinstance(global_stats["request_timestamps"], dict):
-         global_stats["request_timestamps"] = []
-         
-    uptime_tracker.configure_storage(os.path.join(DATA_DIR, "uptime.json"))
-    uptime_tracker.load_heartbeats()
-    logger.info(f"[SYSTEM] 统计数据已加载: {global_stats.get('total_requests', 0)} 次请求, {global_stats.get('total_visitors', 0)} 位访客")
-
-    # 启动缓存清理任务
-    cache_cleanup_task = asyncio.create_task(multi_account_mgr.start_background_cleanup())
-    logger.info(f"[SYSTEM] 后台缓存清理任务已启动（间隔: 5分钟, task={id(cache_cleanup_task)}）")
-
-    # 启动自动刷新账号任务
-    if os.environ.get("ACCOUNTS_CONFIG"):
-        logger.info("[SYSTEM] 自动刷新账号已跳过（使用 ACCOUNTS_CONFIG）")
-    elif storage.is_database_enabled() and AUTO_REFRESH_ACCOUNTS_SECONDS > 0:
-        auto_refresh_task = asyncio.create_task(auto_refresh_accounts_task())
-        logger.info(f"[SYSTEM] 自动刷新账号任务已启动（间隔: {AUTO_REFRESH_ACCOUNTS_SECONDS}秒）")
-    elif storage.is_database_enabled():
-        logger.info("[SYSTEM] 自动刷新账号功能已禁用（配置为0）")
-
-    # [OPTIMIZE] 彻底禁用统计数据上报数据库 (原逻辑保留在注释中)
-
-    # 启动全局统计定时清理任务
-    global_stats_task = asyncio.create_task(global_stats_cleanup_task())
-
-    # 启动媒体文件定时清理任务
-    media_cleanup_task_handle = asyncio.create_task(media_cleanup_task())
-    logger.info(f"[SYSTEM] 媒体文件清理任务已启动（间隔: {MEDIA_CLEANUP_INTERVAL_SECONDS}秒，保留: {MEDIA_MAX_AGE_SECONDS}秒）")
-
-    # 启动自动登录刷新轮询
-    if login_service:
-        try:
-            login_polling_task = asyncio.create_task(login_service.start_polling())
-            logger.info("[SYSTEM] 账户过期检查轮询已启动（间隔: 30分钟）")
-        except Exception as e:
-            logger.error(f"[SYSTEM] 启动登录服务失败: {e}")
-    else:
-        logger.info("[SYSTEM] 自动登录刷新未启用或依赖不可用")
-
-    # 启动会话绑定管理器（从数据库加载绑定关系，启动持久化任务）
-    try:
-        binding_mgr = get_session_binding_manager()
-        # [OPTIMIZE] 禁用会话绑定持久化，避免流浪模式产生的海量临时数据写入数据库
-        # await binding_mgr.load_from_db()
-        # asyncio.create_task(binding_mgr.start_persist_task())
-        logger.info("[SYSTEM] 会话绑定管理器已启动（内存模式，不持久化）")
-    except Exception as e:
-        logger.error(f"[SYSTEM] 启动会话绑定管理器失败: {e}")
-
-    yield
-
-    # --- Shutdown ---
-    for task_name, task in [
-        ("cache_cleanup", cache_cleanup_task),
-        ("auto_refresh", auto_refresh_task),
-        ("global_stats_cleanup", global_stats_task),
-        ("media_cleanup", media_cleanup_task_handle),
-        ("login_polling", login_polling_task),
-    ]:
-        if task and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.warning(f"[SYSTEM] 停止任务异常 ({task_name}): {e}")
-    logger.info("Application shutdown...")
-
 # ---------- OpenAI 兼容接口 ----------
-app = FastAPI(title="Gemini-Business OpenAI Gateway", lifespan=lifespan)
+app = FastAPI(title="Gemini-Business OpenAI Gateway")
 
 frontend_origin = os.getenv("FRONTEND_ORIGIN", "").strip()
 allow_all_origins = os.getenv("ALLOW_ALL_ORIGINS", "0") == "1"
@@ -890,7 +687,7 @@ else:
 # 全局变量：记录上次检测到的账号更新时间（用于自动刷新检测）
 _last_known_accounts_version: float | None = None
 
-async def global_stats_cleanup_task(interval_seconds: int = 1800):
+async def global_stats_cleanup_task(interval_seconds: int = 3600):
     """后台任务：定期清理全局统计数据，防止内存溢出"""
     logger.info(f"[SYSTEM] 统计数据自动清理任务已启动（间隔: {interval_seconds}秒）")
     while True:
@@ -987,18 +784,11 @@ async def auto_refresh_accounts_task():
 
             # 比较更新时间变化
             if _last_known_accounts_version != db_version:
-                current_login_task = login_service.get_current_task() if login_service else None
-                current_login_status = getattr(getattr(current_login_task, "status", None), "value", None)
-                if current_login_status in ("pending", "running"):
-                    logger.info("[AUTO-REFRESH] 登录刷新任务进行中，跳过本轮数据库自动刷新以避免冲突")
-                    continue
-
                 logger.info("[AUTO-REFRESH] 检测到账号变化，正在自动刷新...")
-                before_rss_mb, before_browsers = _collect_memory_and_browser_snapshot()
 
-                old_mgr = multi_account_mgr
-                new_mgr = _reload_accounts(
-                    old_mgr,
+                # 重新加载账号配置
+                multi_account_mgr = _reload_accounts(
+                    multi_account_mgr,
                     http_client,
                     USER_AGENT,
                     ACCOUNT_FAILURE_THRESHOLD,
@@ -1007,28 +797,8 @@ async def auto_refresh_accounts_task():
                     global_stats
                 )
 
-                logger.info(
-                    f"[AUTO-REFRESH] 准备切换 manager: old_id={id(old_mgr)} -> new_id={id(new_mgr)}"
-                )
-
-                # 直接 await 异步版本，避免在异步上下文中调用同步包装导致死锁
-                await _set_multi_account_mgr_async(new_mgr)
                 _last_known_accounts_version = db_version
-                # 保存日志所需信息后，立即释放旧引用
-                new_account_count = len(multi_account_mgr.accounts)
-                del old_mgr, new_mgr
-                import gc; gc.collect()
-                trim_process_memory("auto_refresh_accounts")
-                after_rss_mb, after_browsers = _collect_memory_and_browser_snapshot()
-                logger.info(
-                    "[AUTO-REFRESH] 审计: rss %.1fMB -> %.1fMB, browsers %d -> %d, cache_task=%s",
-                    before_rss_mb,
-                    after_rss_mb,
-                    before_browsers,
-                    after_browsers,
-                    id(cache_cleanup_task) if cache_cleanup_task else "none",
-                )
-                logger.info(f"[AUTO-REFRESH] 账号刷新完成，当前账号数: {new_account_count}")
+                logger.info(f"[AUTO-REFRESH] 账号刷新完成，当前账号数: {len(multi_account_mgr.accounts)}")
 
         except asyncio.CancelledError:
             logger.info("[AUTO-REFRESH] 自动刷新任务已停止")
@@ -1037,6 +807,77 @@ async def auto_refresh_accounts_task():
             logger.error(f"[AUTO-REFRESH] 自动刷新任务异常: {type(e).__name__}: {str(e)[:100]}")
             await asyncio.sleep(60)  # 出错后等待60秒再重试
 
+
+@app.on_event("startup")
+async def startup_event():
+    """应用启动时初始化后台任务"""
+    global global_stats
+
+    # 文件迁移逻辑：将根目录的旧文件迁移到 data 目录
+    old_accounts = "accounts.json"
+    if os.path.exists(old_accounts) and not os.path.exists(ACCOUNTS_FILE):
+        try:
+            shutil.copy(old_accounts, ACCOUNTS_FILE)
+            logger.info(f"{logger_prefix} 已迁移 {old_accounts} -> {ACCOUNTS_FILE}")
+        except Exception as e:
+            logger.warning(f"{logger_prefix} 文件迁移失败: {e}")
+
+    # 加载统计数据
+    global_stats = await load_stats()
+    global_stats.setdefault("request_timestamps", [])
+    global_stats.setdefault("model_request_timestamps", {})
+    global_stats.setdefault("failure_timestamps", [])
+    global_stats.setdefault("rate_limit_timestamps", [])
+    global_stats.setdefault("recent_conversations", [])
+    uptime_tracker.configure_storage(os.path.join(DATA_DIR, "uptime.json"))
+    uptime_tracker.load_heartbeats()
+    logger.info(f"[SYSTEM] 统计数据已加载: {global_stats['total_requests']} 次请求, {global_stats['total_visitors']} 位访客")
+
+    # 启动缓存清理任务
+    asyncio.create_task(multi_account_mgr.start_background_cleanup())
+    logger.info("[SYSTEM] 后台缓存清理任务已启动（间隔: 5分钟）")
+
+    # 启动自动刷新账号任务（仅数据库模式有效）
+    if os.environ.get("ACCOUNTS_CONFIG"):
+        logger.info("[SYSTEM] 自动刷新账号已跳过（使用 ACCOUNTS_CONFIG）")
+    elif storage.is_database_enabled() and AUTO_REFRESH_ACCOUNTS_SECONDS > 0:
+        asyncio.create_task(auto_refresh_accounts_task())
+        logger.info(f"[SYSTEM] 自动刷新账号任务已启动（间隔: {AUTO_REFRESH_ACCOUNTS_SECONDS}秒）")
+    elif storage.is_database_enabled():
+        logger.info("[SYSTEM] 自动刷新账号功能已禁用（配置为0）")
+
+    # 启动数据库统计数据后台持久化任务
+    # [OPTIMIZE] 彻底禁用统计数据上报数据库
+    # if storage.is_database_enabled():
+    #     asyncio.create_task(storage.start_stats_persistence_task(interval=60))
+    #     logger.info("[SYSTEM] 数据库统计后台持久化任务已启动 (间隔: 60s)")
+
+    # 启动全局统计定时清理任务
+    asyncio.create_task(global_stats_cleanup_task())
+
+    # 启动媒体文件定时清理任务
+    asyncio.create_task(media_cleanup_task())
+    logger.info(f"[SYSTEM] 媒体文件清理任务已启动（间隔: {MEDIA_CLEANUP_INTERVAL_SECONDS}秒，保留: {MEDIA_MAX_AGE_SECONDS}秒）")
+
+    # 启动自动登录刷新轮询
+    if login_service:
+        try:
+            asyncio.create_task(login_service.start_polling())
+            logger.info("[SYSTEM] 账户过期检查轮询已启动（间隔: 30分钟）")
+        except Exception as e:
+            logger.error(f"[SYSTEM] 启动登录服务失败: {e}")
+    else:
+        logger.info("[SYSTEM] 自动登录刷新未启用或依赖不可用")
+
+    # 启动会话绑定管理器（从数据库加载绑定关系，启动持久化任务）
+    try:
+        binding_mgr = get_session_binding_manager()
+        # [OPTIMIZE] 禁用会话绑定持久化，避免流浪模式产生的海量临时数据写入数据库
+        # await binding_mgr.load_from_db()
+        # asyncio.create_task(binding_mgr.start_persist_task())
+        logger.info("[SYSTEM] 会话绑定管理器已启动（内存模式，不持久化）")
+    except Exception as e:
+        logger.error(f"[SYSTEM] 启动会话绑定管理器失败: {e}")
 
 # ---------- 日志脱敏函数 ----------
 def get_sanitized_logs(limit: int = 100) -> list:
@@ -1254,16 +1095,6 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = 0.7
     top_p: Optional[float] = 1.0
 
-class ImageGenerationRequest(BaseModel):
-    """OpenAI /v1/images/generations 请求格式"""
-    prompt: str
-    model: str = "gemini-imagen"
-    n: Optional[int] = 1
-    size: Optional[str] = "1024x1024"
-    response_format: Optional[str] = None  # "url" or "b64_json"，None 表示使用系统配置
-    quality: Optional[str] = "standard"  # "standard" or "hd"
-    style: Optional[str] = "natural"  # "natural" or "vivid"
-
 def create_chunk(id: str, created: int, model: str, delta: dict, finish_reason: Union[str, None]) -> str:
     chunk = {
         "id": id,
@@ -1299,13 +1130,6 @@ async def admin_logout(request: Request):
     logout_user(request)
     logger.info("[AUTH] Admin logout")
     return {"success": True}
-
-
-@app.get("/session/status")
-@require_login(redirect_to_login=False)
-async def session_status(request: Request):
-    """认证状态检查端点（仅用于会话登录态探测）"""
-    return {"authenticated": True}
 
 
 
@@ -1409,9 +1233,7 @@ async def admin_get_accounts(request: Request):
             "cooldown_reason": cooldown_reason,
             "conversation_count": account_manager.conversation_count,
             "session_usage_count": account_manager.session_usage_count,
-            "quota_status": quota_status,
-            "account_expires_at": config.account_expires_at or "永久",
-            "account_remaining_days": config.get_account_remaining_days()
+            "quota_status": quota_status  # 新增配额状态
         })
 
     return {"total": len(accounts_info), "accounts": accounts_info}
@@ -1492,14 +1314,6 @@ async def admin_get_current_register_task(request: Request):
 @app.post("/admin/login/start")
 @require_login()
 async def admin_start_login(request: Request, account_ids: List[str] = Body(...)):
-    global main_loop
-    if main_loop is None:
-        try:
-            main_loop = asyncio.get_running_loop()
-            logger.info(f"[SYSTEM] 在 login/start 接口中捕获主事件循环: {id(main_loop)}")
-        except Exception:
-            pass
-
     if not login_service:
         raise HTTPException(503, "login service unavailable")
     task = await login_service.start_login(account_ids)
@@ -1541,14 +1355,6 @@ async def admin_get_current_login_task(request: Request):
 @app.post("/admin/login/check")
 @require_login()
 async def admin_check_login_refresh(request: Request):
-    global main_loop
-    if main_loop is None:
-        try:
-            main_loop = asyncio.get_running_loop()
-            logger.info(f"[SYSTEM] 在 login/check 接口中捕获主事件循环: {id(main_loop)}")
-        except Exception:
-            pass
-
     if not login_service:
         raise HTTPException(503, "login service unavailable")
     task = await login_service.check_and_refresh()
@@ -2177,34 +1983,25 @@ async def chat_impl(
                  if isinstance(last_msg.content, str):
                      last_user_content = last_msg.content.strip()
                  elif isinstance(last_msg.content, list):
-                     # 拼接所有文本片段（而非只取第一个），避免客户端分片导致漏判硬指令
-                     text_parts = []
+                     # 如果是列表，提取第一个文本部分
                      for part in last_msg.content:
                          if isinstance(part, dict) and part.get("type") == "text":
-                             text_parts.append(part.get("text", ""))
-                     last_user_content = "".join(text_parts).strip()
-                 else:
-                     last_user_content = str(last_msg.content).strip()
+                             last_user_content = part.get("text", "").strip()
+                             break
 
-        # 指令处理 (增强版: 支持上下文污染 + 多文本分片 + 尾部标点)
-        # 仅当命令位于消息末尾，且前面是起始/空白/常见分隔符时触发
-        command_pattern = r"(?:^|[\s,，;；:：/\\|\-—_~`'\"“”‘’()（）\[\]{}<>])(?P<cmd>换号|重置|切换账号|reset\s+session|switch\s+account)\s*[!！.。]*$"
-        match = re.search(command_pattern, last_user_content, re.IGNORECASE)
-
+        # 指令处理
         intercept_response_content = None
-        if match:
-            command_raw = re.sub(r"\s+", " ", match.group("cmd")).strip().lower()
-            if command_raw in ["重置", "reset session"]:
-                logger.info(f"[COMMAND] [req_{request_id}] 触发指令: 重置 (ChatID: {chat_id_for_binding})")
-                await binding_mgr.reset_session_binding(chat_id_for_binding)
-                await multi_account_mgr.clear_session_cache(chat_id_for_binding)
-                intercept_response_content = "✅ 记忆已重置，当前账号环境保留。"
-
-            elif command_raw in ["换号", "切换账号", "switch account"]:
-                logger.info(f"[COMMAND] [req_{request_id}] 触发指令: 换号 (ChatID: {chat_id_for_binding})")
-                await binding_mgr.remove_binding(chat_id_for_binding)
-                await multi_account_mgr.clear_session_cache(chat_id_for_binding)
-                intercept_response_content = "🔄 账号已切换，正在连接新分身..."
+        if last_user_content == "重置":
+            logger.info(f"[COMMAND] [req_{request_id}] 触发指令: 重置 (ChatID: {chat_id_for_binding})")
+            await binding_mgr.reset_session_binding(chat_id_for_binding)
+            await multi_account_mgr.clear_session_cache(chat_id_for_binding)
+            intercept_response_content = "✅ 记忆已重置，当前账号环境保留。"
+        
+        elif last_user_content == "换号":
+            logger.info(f"[COMMAND] [req_{request_id}] 触发指令: 换号 (ChatID: {chat_id_for_binding})")
+            await binding_mgr.remove_binding(chat_id_for_binding)
+            await multi_account_mgr.clear_session_cache(chat_id_for_binding)
+            intercept_response_content = "🔄 账号已切换，正在连接新分身..."
 
         if intercept_response_content:
             # 构造响应 ID
@@ -2359,8 +2156,25 @@ async def chat_impl(
                         status = classify_error_status(503, last_error if isinstance(last_error, Exception) else Exception("account_pool_unavailable"))
                         await finalize_result(status, 503, f"All accounts unavailable: {str(last_error)[:100]}")
                         raise HTTPException(503, f"All accounts unavailable: {str(last_error)[:100]}")
-                    # 退避延迟后继续尝试下一个账户
-                    await asyncio.sleep(min(2 * (attempt + 1), 6))  # 2s, 4s, 6s
+                    # 继续尝试下一个账户
+                    # 记录账号池状态（账户可用）
+                    uptime_tracker.record_request("account_pool", True)
+                    break
+                except Exception as e:
+                    last_error = e
+                    error_type = type(e).__name__
+                    # 安全获取账户ID
+                    account_id = account_manager.config.account_id if 'account_manager' in locals() and account_manager else 'unknown'
+                    logger.error(f"[CHAT] [req_{request_id}] 账户 {account_id} 创建会话失败 (尝试 {attempt + 1}/{max_account_tries}) - {error_type}: {str(e)}")
+                    # 记录账号池状态（单个账户失败）
+                    status_code = e.status_code if isinstance(e, HTTPException) else None
+                    uptime_tracker.record_request("account_pool", False, status_code=status_code)
+                    if attempt == max_account_tries - 1:
+                        logger.error(f"[CHAT] [req_{request_id}] 所有账户均不可用")
+                        status = classify_error_status(503, last_error if isinstance(last_error, Exception) else Exception("account_pool_unavailable"))
+                        await finalize_result(status, 503, f"All accounts unavailable: {str(last_error)[:100]}")
+                        raise HTTPException(503, f"All accounts unavailable: {str(last_error)[:100]}")
+                    # 继续尝试下一个账户
 
     # 消息瘦身：根据是否首次对话决定是否保留 system 提示词
     stripped_messages_dict = strip_to_last_user_message(original_messages_dict, is_first_message=is_new_conversation)
@@ -2451,8 +2265,6 @@ async def chat_impl(
 
         # 记录已失败的账户，避免重复使用
         failed_accounts = set()
-        # Memory 模式下触发 429 后，在切号成功时向用户提示“全新记忆”
-        memory_reset_notice_pending = False
 
         while retry_count <= max_retries:
             # ------------------------------------------------------------------
@@ -2506,16 +2318,6 @@ async def chat_impl(
                     account_manager = new_account
                     current_retry_mode = True
                     current_file_ids = []  # 清空 ID，强制重新上传
-
-                    if memory_reset_notice_pending:
-                        notice_text = "⚠️ 检测到上一账号触发 429 限流，已切换新账号并重置为全新记忆上下文。\n\n"
-                        if req.stream:
-                            notice_chunk = create_chunk(chat_id, created_time, req.model, {"content": notice_text}, None)
-                            yield f"data: {notice_chunk}\n\n"
-                        else:
-                            current_text = notice_text + current_text
-                        logger.warning(f"[CHAT] [req_{request_id}] 已向客户端发送 429 全新记忆提示")
-                        memory_reset_notice_pending = False
 
                 except Exception as create_err:
                     error_type = type(create_err).__name__
@@ -2610,19 +2412,6 @@ async def chat_impl(
                 else:
                     account_manager.handle_non_http_error("聊天请求", request_id)
 
-                # Memory 模式下遇到 429：彻底销毁当前上下文，确保下一条消息重新选账号建新会话
-                if (
-                    is_http_exception
-                    and status_code == 429
-                    and key_config.mode == ApiKeyMode.MEMORY
-                ):
-                    await multi_account_mgr.clear_session_cache(session_cache_key)
-                    await binding_mgr.remove_binding(chat_id_for_binding)
-                    memory_reset_notice_pending = True
-                    logger.warning(
-                        f"[CHAT] [req_{request_id}] Memory 模式触发 429，已清理会话缓存并解绑账号 (chat={chat_id_for_binding[:8]}...)"
-                    )
-
                 retry_count += 1
 
                 # 检查是否超过最大重试次数
@@ -2632,11 +2421,6 @@ async def chat_impl(
                     await finalize_result(status, status_code, error_detail)
                     if req.stream: yield f"data: {json.dumps({'error': {'message': f'Max retries ({max_retries}) exceeded: {e}'}})}\n\n"
                     return
-
-                # 指数退避延迟，避免快速连续请求触发 429
-                backoff_seconds = min(2 ** retry_count, 8)  # 2s, 4s, 8s
-                logger.info(f"[CHAT] [req_{request_id}] 退避 {backoff_seconds}s 后重试...")
-                await asyncio.sleep(backoff_seconds)
 
     if req.stream:
         return StreamingResponse(response_wrapper(), media_type="text/event-stream")
@@ -2678,99 +2462,6 @@ async def chat_impl(
         "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     }
-
-# ---------- 图片生成 API (OpenAI 兼容) ----------
-@app.post("/v1/images/generations")
-async def generate_images(
-    req: ImageGenerationRequest,
-    request: Request,
-    authorization: Optional[str] = Header(None)
-):
-    """OpenAI 兼容的图片生成接口
-
-    将 /v1/images/generations 请求转换为内部格式处理，
-    然后将响应转换回 OpenAI 图片生成格式
-    """
-    # API Key 验证（使用本地多 Key 方案）
-    key_config = verify_api_key(authorization, config.basic)
-
-    # 生成请求ID
-    request_id = str(uuid.uuid4())[:6]
-
-    # 转换为 ChatRequest 格式
-    chat_req = ChatRequest(
-        model=req.model,
-        messages=[
-            Message(role="user", content=req.prompt)
-        ],
-        stream=False  # 图片生成不支持流式
-    )
-
-    logger.info(f"[IMAGE-GEN] [req_{request_id}] 收到图片生成请求: model={req.model}, prompt={req.prompt[:100]}")
-
-    try:
-        # 调用 chat_impl 获取响应（适配本地签名，传入 key_config）
-        chat_response = await chat_impl(chat_req, request, authorization, key_config)
-
-        # 从响应中提取图片
-        message_content = chat_response["choices"][0]["message"]["content"]
-
-        # 解析 markdown 中的图片
-        b64_pattern = r'!\[.*?\]\(data:([^;]+);base64,([^\)]+)\)'
-        b64_matches = re.findall(b64_pattern, message_content)
-        url_pattern = r'!\[.*?\]\((https?://[^\)]+)\)'
-        url_matches = re.findall(url_pattern, message_content)
-
-        # 确定响应格式：始终使用系统配置
-        system_format = config_manager.image_output_format
-        response_format = "b64_json" if system_format == "base64" else "url"
-
-        logger.info(f"[IMAGE-GEN] [req_{request_id}] 使用系统配置: {system_format} -> {response_format}")
-
-        # 构建 OpenAI 格式的响应
-        created_time = int(time.time())
-        data_list = []
-
-        if response_format == "b64_json":
-            # 返回 base64 格式
-            for mime, b64_data in b64_matches[:req.n]:
-                data_list.append({"b64_json": b64_data, "revised_prompt": req.prompt})
-
-            # 如果没有 base64 但有 URL，下载并转换
-            if not data_list and url_matches:
-                for url in url_matches[:req.n]:
-                    try:
-                        resp = await http_client.get(url)
-                        if resp.status_code == 200:
-                            b64_data = base64.b64encode(resp.content).decode()
-                            data_list.append({"b64_json": b64_data, "revised_prompt": req.prompt})
-                    except Exception as e:
-                        logger.error(f"[IMAGE-GEN] [req_{request_id}] 下载图片失败: {url}, {str(e)}")
-        else:
-            # 返回 URL 格式
-            for url in url_matches[:req.n]:
-                data_list.append({"url": url, "revised_prompt": req.prompt})
-
-            # 如果没有 URL 但有 base64，保存并生成 URL
-            if not data_list and b64_matches:
-                base_url = get_base_url(request)
-                chat_id = f"img-{uuid.uuid4()}"
-                for idx, (mime, b64_data) in enumerate(b64_matches[:req.n], 1):
-                    try:
-                        img_data = base64.b64decode(b64_data)
-                        file_id = f"gen-{uuid.uuid4()}"
-                        url = save_image_to_hf(img_data, chat_id, file_id, mime, base_url, IMAGE_DIR)
-                        data_list.append({"url": url, "revised_prompt": req.prompt})
-                    except Exception as e:
-                        logger.error(f"[IMAGE-GEN] [req_{request_id}] 保存图片失败: {str(e)}")
-
-        logger.info(f"[IMAGE-GEN] [req_{request_id}] 图片生成完成: {len(data_list)}张")
-
-        return {"created": created_time, "data": data_list}
-
-    except Exception as e:
-        logger.error(f"[IMAGE-GEN] [req_{request_id}] 图片生成失败: {type(e).__name__}: {str(e)}")
-        raise
 
 # ---------- 图片生成处理函数 ----------
 def parse_images_from_response(data_list: list) -> tuple[list, str]:
@@ -2912,19 +2603,10 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
         except ValueError as e:
             uptime_tracker.record_request(model_name, False)
             logger.error(f"[API] [{account_manager.config.account_id}] [req_{request_id}] JSON解析失败: {str(e)}")
-            logger.warning(f"[API] [{account_manager.config.account_id}] [req_{request_id}] 响应中断: {time.time() - start_time:.2f}秒")
-            # 发送错误块给前端
-            error_chunk = create_chunk(chat_id, created_time, model_name, {"content": f"\n\n[System Error] Response parsing failed: {str(e)}"}, None)
-            yield f"data: {error_chunk}\n\n"
         except Exception as e:
             error_type = type(e).__name__
             uptime_tracker.record_request(model_name, False)
             logger.error(f"[API] [{account_manager.config.account_id}] [req_{request_id}] 流处理错误 ({error_type}): {str(e)}")
-            logger.warning(f"[API] [{account_manager.config.account_id}] [req_{request_id}] 响应中断: {time.time() - start_time:.2f}秒")
-            # 发送错误块给前端
-            error_chunk = create_chunk(chat_id, created_time, model_name, {"content": f"\n\n[System Error] Stream interrupted: {str(e)}"}, None)
-            yield f"data: {error_chunk}\n\n"
-            # 重新抛出异常以便上层记录
             raise
 
     # 在 async with 块外处理图片下载（避免占用上游连接）
@@ -3129,16 +2811,5 @@ async def not_found_handler(request: Request, exc: HTTPException):
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n" + "="*50)
-    print("Gemini Business2API 正在启动...")
-    print(f"监听地址: 0.0.0.0")
-    print(f"监听端口: {os.getenv('PORT', '7860')}")
-    print("="*50 + "\n")
-    
-    try:
-        port = int(os.getenv("PORT", "7860"))
-        uvicorn.run(app, host="0.0.0.0", port=port)
-    except Exception as e:
-        print(f"\n[CRITICAL ERROR] 无法启动应用: {e}")
-        import traceback
-        traceback.print_exc()
+    port = int(os.getenv("PORT", "7860"))
+    uvicorn.run(app, host="0.0.0.0", port=port)

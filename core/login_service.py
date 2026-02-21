@@ -12,6 +12,8 @@ from core.account import load_accounts_from_source
 from core.base_task_service import BaseTask, BaseTaskService, TaskCancelledError, TaskStatus
 from core.config import config
 from core.mail_providers import create_temp_mail_client
+from core.gemini_automation import GeminiAutomation
+from core.gemini_automation_uc import GeminiAutomationUC
 from core.microsoft_mail_client import MicrosoftMailClient
 from core.outbound_proxy import OutboundProxyConfig
 
@@ -56,22 +58,7 @@ class LoginService(BaseTaskService[LoginTask]):
             log_prefix="REFRESH",
         )
         self._is_polling = False
-        # 自动刷新逻辑配置：Docker 环境默认暂停（本地开发场景），非 Docker 默认开启
-        # 优先级：环境变量 AUTO_REFRESH_ENABLED > 环境检测
-        is_docker = os.path.exists('/.dockerenv') or os.environ.get('IS_DOCKER') == '1'
-        env_refresh_enabled = os.environ.get("AUTO_REFRESH_ENABLED")
-        
-        if env_refresh_enabled is not None:
-            # 显式设置了环境变量则以环境变量为准
-            self._auto_refresh_paused = env_refresh_enabled.lower() not in ("true", "1")
-        else:
-            # 未设置环境变量时：Docker 环境默认暂停，非 Docker 默认开启
-            self._auto_refresh_paused = True if is_docker else False
-        
-        if self._auto_refresh_paused:
-            logger.info("[LOGIN] 自动刷新已初始化为暂停状态 (环境: %s)", "Docker" if is_docker else "Native")
-        else:
-            logger.info("[LOGIN] 自动刷新已初始化为启用状态")
+        self._auto_refresh_paused = True  # 运行时开关：默认暂停（不自动刷新）
 
     def _get_active_account_ids(self) -> set:
         """获取当前正在处理中（PENDING 或 RUNNING）的所有账号 ID"""
@@ -116,10 +103,6 @@ class LoginService(BaseTaskService[LoginTask]):
         loop = asyncio.get_running_loop()
         self._append_log(task, "info", f"🚀 刷新任务已启动 (共 {len(task.account_ids)} 个账号)")
 
-        # 批量任务只加载一次账户配置，避免每个账号都触发全量重载
-        accounts = load_accounts_from_source()
-        accounts_dirty = False
-
         for idx, account_id in enumerate(task.account_ids, 1):
             # 队列平滑：除第一个账号外，每个账号之间随机等待 2-5 秒
             if idx > 1:
@@ -132,28 +115,25 @@ class LoginService(BaseTaskService[LoginTask]):
                 self._append_log(task, "warning", f"login task cancelled: {task.cancel_reason or 'cancelled'}")
                 task.status = TaskStatus.CANCELLED
                 task.finished_at = time.time()
-                break
+                return
 
             try:
                 self._append_log(task, "info", f"📊 进度: {idx}/{len(task.account_ids)}")
                 self._append_log(task, "info", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                 self._append_log(task, "info", f"🔄 开始刷新账号: {account_id}")
                 self._append_log(task, "info", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                result = await loop.run_in_executor(self._executor, self._refresh_one, account_id, task, accounts)
+                result = await loop.run_in_executor(self._executor, self._refresh_one, account_id, task)
             except TaskCancelledError:
                 # 线程侧已触发取消，直接结束任务
                 task.status = TaskStatus.CANCELLED
                 task.finished_at = time.time()
-                break
+                return
             except Exception as exc:
                 result = {"success": False, "email": account_id, "error": str(exc)}
             task.progress += 1
             task.results.append(result)
-            if len(task.results) > self._max_task_results:
-                task.results = task.results[-self._max_task_results:]
 
             if result.get("success"):
-                accounts_dirty = True
                 task.success_count += 1
                 self._append_log(task, "info", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                 self._append_log(task, "info", f"🎉 刷新成功: {account_id}")
@@ -166,12 +146,6 @@ class LoginService(BaseTaskService[LoginTask]):
                 self._append_log(task, "error", f"❌ 失败原因: {error}")
                 self._append_log(task, "error", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-        # 批量任务结束后统一持久化一次，避免每个账号都重建管理器
-        if accounts_dirty:
-            self._append_log(task, "info", "💾 批量持久化刷新结果...")
-            self._apply_accounts_update(accounts)
-            self._append_log(task, "info", "✅ 批量配置已保存到数据库")
-
         if task.cancel_requested:
             task.status = TaskStatus.CANCELLED
         else:
@@ -181,8 +155,9 @@ class LoginService(BaseTaskService[LoginTask]):
         self._current_task_id = None
         self._append_log(task, "info", f"🏁 刷新任务完成 (成功: {task.success_count}, 失败: {task.fail_count}, 总计: {len(task.account_ids)})")
 
-    def _refresh_one(self, account_id: str, task: LoginTask, accounts: List[Dict[str, Any]]) -> dict:
+    def _refresh_one(self, account_id: str, task: LoginTask) -> dict:
         """刷新单个账户"""
+        accounts = load_accounts_from_source()
         account = next((acc for acc in accounts if acc.get("id") == account_id), None)
         if not account:
             return {"success": False, "email": account_id, "error": "账号不存在"}
@@ -322,7 +297,7 @@ class LoginService(BaseTaskService[LoginTask]):
             log_cb("error", f"❌ 自动登录失败: {error}")
             return {"success": False, "email": account_id, "error": error}
 
-        log_cb("info", "✅ Gemini 登录成功，配置待批量保存...")
+        log_cb("info", "✅ Gemini 登录成功，正在保存配置...")
 
         # 更新账户配置
         config_data = result["config"]
@@ -350,24 +325,13 @@ class LoginService(BaseTaskService[LoginTask]):
                 acc.update(config_data)
                 break
 
+        self._apply_accounts_update(accounts)
+        log_cb("info", "✅ 配置已保存到数据库")
         return {"success": True, "email": account_id, "config": config_data}
 
 
     def _get_expiring_accounts(self) -> List[str]:
-        # [OPTIMIZE] 优先使用内存中的账户列表，避免唤醒数据库
-        # accounts = load_accounts_from_source()
-        accounts = []
-        if self.multi_account_mgr and self.multi_account_mgr.accounts:
-            # 将 AccountManager 对象转换为字典格式以兼容现有逻辑
-            for acc_mgr in self.multi_account_mgr.accounts.values():
-                # 转换 config 对象为 dict
-                acc_dict = acc_mgr.config.__dict__.copy()
-                acc_dict["id"] = acc_mgr.config.account_id
-                accounts.append(acc_dict)
-        else:
-            # 只有内存为空时才降级查库（极少情况）
-            accounts = load_accounts_from_source() or []
-
+        accounts = load_accounts_from_source()
         expiring = []
         beijing_tz = timezone(timedelta(hours=8))
         now = datetime.now(beijing_tz)
@@ -379,19 +343,14 @@ class LoginService(BaseTaskService[LoginTask]):
             account_id = account.get("id")
             if not account_id or account.get("disabled") or account_id in active_ids:
                 continue
-            
-            # 检查是否为支持自动刷新的账号类型
             mail_provider = (account.get("mail_provider") or "").lower()
             if not mail_provider:
-                # 尝试推断
                 if account.get("mail_client_id") or account.get("mail_refresh_token"):
                     mail_provider = "microsoft"
                 else:
                     mail_provider = "duckmail"
 
             mail_password = account.get("mail_password") or account.get("email_password")
-            
-            # 根据类型检查必要参数
             if mail_provider == "microsoft":
                 if not account.get("mail_client_id") or not account.get("mail_refresh_token"):
                     continue
@@ -402,30 +361,23 @@ class LoginService(BaseTaskService[LoginTask]):
                 if not config.basic.freemail_jwt_token:
                     continue
             elif mail_provider == "gptmail":
+                # GPTMail 不需要密码，允许直接刷新
                 pass
             else:
                 continue
-
             expires_at = account.get("expires_at")
             if not expires_at:
                 continue
 
             try:
                 expire_time = datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
-                # 兼容不带时区的时间字符串（假设为北京时间）
-                if expire_time.tzinfo is None:
-                    expire_time = expire_time.replace(tzinfo=beijing_tz)
-                
+                expire_time = expire_time.replace(tzinfo=beijing_tz)
                 remaining = (expire_time - now).total_seconds() / 3600
             except Exception:
                 continue
 
             if remaining <= config.basic.refresh_window_hours:
-                logger.info(f"[LOGIN] 账号 {account_id} 即将过期 (剩余 {remaining:.2f}h <= {config.basic.refresh_window_hours}h)，加入刷新队列")
                 expiring.append(account.get("id"))
-            else:
-                # 仅在 debug 模式下输出未过期账号信息，避免刷屏
-                logger.debug(f"[LOGIN] 账号 {account_id} 状态良好 (剩余 {remaining:.2f}h > {config.basic.refresh_window_hours}h)，暂不刷新")
 
         return expiring
 
