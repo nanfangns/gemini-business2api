@@ -352,39 +352,16 @@ class BaseTaskService(Generic[T]):
                         self._log_prefix, to_remove, len(self._tasks))
 
     async def _force_memory_release(self) -> None:
-        """任务结束后触发底层操作系统的物理内存回收，消除常驻碎片"""
+        """任务结束后触发常规垃圾回收，清理多余的对象占用"""
         await asyncio.sleep(2)  # 等待其他异步收尾和子进程完全退出
         try:
             import gc
-            # 强制收集所有分代的 Python 孤立对象
-            gc.collect(2)
             
-            # 操作系统级驻留集/堆截断 (Working Set Emptier / Heap Trimmer)
-            import platform
-            system = platform.system()
-            if system == "Windows":
-                import ctypes
-                try:
-                    # 标识符强行清空该进程内存工作集
-                    ctypes.windll.psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
-                    logger.info("[%s] 已触发 Windows EmptyWorkingSet，物理内存已强制回收 (0 增长机制生效)", self._log_prefix)
-                except Exception as e:
-                    logger.debug("[%s] EmptyWorkingSet 失败: %s", self._log_prefix, e)
-            elif system == "Linux" or system == "Darwin":
-                import ctypes
-                import ctypes.util
-                try:
-                    # Zeabur / Docker 完美适配：动态定位系统的 C 标准库
-                    libc_name = ctypes.util.find_library("c")
-                    libc = ctypes.CDLL(libc_name) if libc_name else ctypes.CDLL("libc.so.6")
+            # 第一重：强制收集所有分代的 Python 孤立对象
+            gc.collect()
+            
+            # 记录清理情况
+            logger.info("[%s] 任务历史缩减及常规 GC 垃圾回收已完成", self._log_prefix)
                     
-                    # malloc_trim 是 glibc 特有的，强制向内核归还堆顶闲置内存区
-                    if hasattr(libc, "malloc_trim"):
-                        libc.malloc_trim(0)
-                        logger.info("[%s] 已触发 Linux malloc_trim，堆内存已强制向操作系统归还 (Zeabur/Docker 适配成功)", self._log_prefix)
-                    else:
-                        logger.debug("[%s] 当前系统的 libc 不支持 malloc_trim", self._log_prefix)
-                except Exception as e:
-                    logger.debug("[%s] malloc_trim 失败: %s", self._log_prefix, e)
         except Exception as e:
-            logger.debug("[%s] 系统级内存回收警告: %s", self._log_prefix, e)
+            logger.debug("[%s] 常规内存回收异常: %s", self._log_prefix, e)

@@ -138,6 +138,7 @@ def run_browser_in_subprocess(
         # 收集 stderr 中非 LOG: 开头的行作为错误信息
         error_lines = [l for l in stderr_lines if not l.startswith("LOG:")]
         error_msg = "\n".join(error_lines[-10:]) if error_lines else f"exitcode={proc.returncode}"
+        
         return {"success": False, "error": f"子进程异常退出: {error_msg}"}
 
     return {"success": False, "error": "子进程未返回结果"}
@@ -172,8 +173,20 @@ def _read_stderr_logs(
 
 
 def _kill_proc(proc: subprocess.Popen) -> None:
-    """终止子进程。"""
+    """终止子进程及其衍生的所有孙子进程（如 Chrome 等），避免僵尸进程导致内存狂飙。"""
     try:
+        import psutil
+        try:
+            parent = psutil.Process(proc.pid)
+            children = parent.children(recursive=True)
+            for child in children:
+                try:
+                    child.kill()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+            
         proc.kill()
         proc.wait(timeout=5)
     except Exception:
