@@ -352,16 +352,33 @@ class BaseTaskService(Generic[T]):
                         self._log_prefix, to_remove, len(self._tasks))
 
     async def _force_memory_release(self) -> None:
-        """任务结束后触发常规垃圾回收，清理多余的对象占用"""
-        await asyncio.sleep(2)  # 等待其他异步收尾和子进程完全退出
+        """任务结束后触发常规垃圾回收，以及操作系统的底层 Arena 内存压缩"""
+        await asyncio.sleep(2)  # 等待其他异步收尾和子进程完全自然退出（不要强制）
         try:
             import gc
             
             # 第一重：强制收集所有分代的 Python 孤立对象
             gc.collect()
             
+            # 第二重：安全地向操作系统剥离 glibc 的 11MB 虚假残留高水位 (仅限于 Linux 容器)
+            import platform
+            system = platform.system()
+            if system == "Linux" or system == "Darwin":
+                import ctypes
+                import ctypes.util
+                try:
+                    # 动态寻找并加载 C 运行库
+                    libc_name = ctypes.util.find_library("c")
+                    libc = ctypes.CDLL(libc_name) if libc_name else ctypes.CDLL("libc.so.6")
+                    
+                    if hasattr(libc, "malloc_trim"):
+                        libc.malloc_trim(0)
+                        logger.debug("[%s] Linux 平台 `malloc_trim(0)` 已触发：清理了底层 C 线程栈/空闲 Arena 的假性驻留", self._log_prefix)
+                except Exception as e:
+                    logger.debug("[%s] 底层内存刮擦失败: %s", self._log_prefix, e)
+            
             # 记录清理情况
-            logger.info("[%s] 任务历史缩减及常规 GC 垃圾回收已完成", self._log_prefix)
+            logger.info("[%s] 任务历史缩减及系统垃圾回收已完成", self._log_prefix)
                     
         except Exception as e:
-            logger.debug("[%s] 常规内存回收异常: %s", self._log_prefix, e)
+            logger.debug("[%s] 内存回收异常: %s", self._log_prefix, e)
