@@ -436,11 +436,18 @@ class LoginService(BaseTaskService[LoginTask]):
     def _compute_available_account_count(self) -> int:
         accounts = load_accounts_from_source()
         available = 0
+        now = datetime.now(timezone(timedelta(hours=8)))
         for account in accounts:
             if account.get("disabled"):
                 continue
-            if self._is_session_expired(account):
-                continue
+            
+            # 使用账号的 30 天有效期判断，而不是 session 有效期
+            account_expires = self._parse_beijing_datetime(account.get("account_expires_at"))
+            if account_expires:
+                remaining_hours = (account_expires - now).total_seconds() / 3600
+                if remaining_hours < ACCOUNT_EXPIRY_RECYCLE_HOURS:
+                    continue
+            
             available += 1
         return available
 
