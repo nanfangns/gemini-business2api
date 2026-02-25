@@ -37,17 +37,6 @@ def _find_chromium_path() -> Optional[str]:
     return None
 
 
-def _read_positive_int_env(name: str, default: int) -> int:
-    raw = os.getenv(name, str(default)).strip()
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    if value <= 0:
-        return default
-    return value
-
-
 class GeminiAutomation:
     """Gemini自动化登录"""
 
@@ -86,11 +75,9 @@ class GeminiAutomation:
             self._log("info", "🔓 已获取浏览器资源锁")
             page = None
             user_data_dir = None
-            browser_pid = None
             try:
                 page = self._create_page()
                 user_data_dir = getattr(page, 'user_data_dir', None)
-                browser_pid = getattr(page, "process_id", None)
                 self._page = page
                 self._user_data_dir = user_data_dir
                 return self._run_flow(page, email, mail_client)
@@ -106,9 +93,7 @@ class GeminiAutomation:
                     except Exception:
                         pass
                 
-                # 先精确清理当前浏览器进程，再兜底扫除其余残留
-                if browser_pid:
-                    self._kill_browser_process(browser_pid)
+                # 无论 page.quit() 是否成功，都执行一次彻底的扫除
                 self._kill_browser_process()
                 
                 self._page = None
@@ -640,9 +625,8 @@ class GeminiAutomation:
         if not username_input:
             # 即使没找到输入框，如果是新账号注册，也要等一下参数生成
             if is_new_account:
-                wait_seconds = _read_positive_int_env("REGISTER_CID_WAIT_SECONDS", 30)
-                self._log("info", f"⏳ 新账号注册中，正在等待参数生成（最长 {wait_seconds}s）...")
-                if not self._wait_for_cid(page, timeout=wait_seconds):
+                self._log("info", "⏳ 新账号注册中，正在等待参数生成...")
+                if not self._wait_for_cid(page, timeout=30):
                     return False
                 return True
             return False
@@ -668,14 +652,13 @@ class GeminiAutomation:
             username_input.input("\n")
 
             if is_new_account:
-                first_wait_seconds = _read_positive_int_env("REGISTER_CID_WAIT_SECONDS", 30)
-                refresh_wait_seconds = _read_positive_int_env("REGISTER_CID_REFRESH_WAIT_SECONDS", 10)
-                self._log("info", f"⏳ 等待注册后 cid 生成（最长 {first_wait_seconds}s）...")
-                if not self._wait_for_cid(page, timeout=first_wait_seconds):
+                # 注册专用：等待 45 秒，失败则刷新再等 15 秒
+                self._log("info", "⏳ 等待注册后 cid 生成 (最长 45s)...")
+                if not self._wait_for_cid(page, timeout=45):
                     self._log("warning", "⚠️ 等待超时，尝试刷新页面...")
                     page.refresh()
-                    if not self._wait_for_cid(page, timeout=refresh_wait_seconds):
-                        self._log("error", f"❌ 刷新后仍未检测到 cid（额外等待 {refresh_wait_seconds}s）")
+                    if not self._wait_for_cid(page, timeout=15):
+                        self._log("error", "❌ 刷新后仍未检测到 cid")
                         return False
             else:
                 if not self._wait_for_cid(page, timeout=15):
