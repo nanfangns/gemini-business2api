@@ -1,11 +1,10 @@
 """
-Subprocess wrapper for browser automation tasks.
+子进程调用包装（主进程侧）
 
-Runs core/browser_task_runner.py in a child Python process, forwards logs,
-and parses the RESULT payload from stdout.
+通过 subprocess.Popen 启动 browser_task_runner.py，
+传递 JSON 参数，接收日志和结果。
+子进程退出后 OS 回收全部浏览器相关内存。
 """
-
-from __future__ import annotations
 
 import json
 import logging
@@ -17,43 +16,12 @@ import time
 from collections import deque
 from typing import Callable, Deque, Optional
 
-from core.browser_process_utils import is_browser_related_process, normalize_cmdline
-
 logger = logging.getLogger("gemini.subprocess_worker")
 
+# 子进程脚本路径
 _RUNNER_SCRIPT = os.path.join(os.path.dirname(__file__), "browser_task_runner.py")
+# 默认超时（秒）
 _DEFAULT_TIMEOUT = 300
-_AUTOMATION_CMD_MARKERS = (
-    "--gemini-business-automation",
-    "gemini_chrome_",
-    "uc-profile-",
-)
-_DEFAULT_STRICT_AUTOMATION_CLEANUP = "1" if sys.platform.startswith("linux") else "0"
-_DEFAULT_GLOBAL_BROWSER_SWEEP = "1" if sys.platform.startswith("linux") else "0"
-
-
-def _is_strict_cleanup_enabled() -> bool:
-    raw = os.getenv("STRICT_AUTOMATION_CLEANUP", _DEFAULT_STRICT_AUTOMATION_CLEANUP)
-    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _is_global_browser_sweep_enabled() -> bool:
-    raw = os.getenv("AUTOMATION_GLOBAL_BROWSER_SWEEP", _DEFAULT_GLOBAL_BROWSER_SWEEP)
-    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _has_automation_cleanup_marker(cmdline: Optional[list[str] | tuple[str, ...] | str]) -> bool:
-    cmdline_str = normalize_cmdline(cmdline)
-    return any(marker in cmdline_str for marker in _AUTOMATION_CMD_MARKERS)
-
-
-def _should_cleanup_browser_process(
-    process_name: str,
-    cmdline: Optional[list[str] | tuple[str, ...] | str],
-    has_env_marker: bool,
-) -> bool:
-    matched, _ = is_browser_related_process(process_name or "", cmdline)
-    return bool(matched and (has_env_marker or _has_automation_cleanup_marker(cmdline)))
 
 
 def run_browser_in_subprocess(
@@ -62,15 +30,25 @@ def run_browser_in_subprocess(
     timeout: int = _DEFAULT_TIMEOUT,
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> dict:
-    """Run one browser automation task in a child process."""
+    """
+    在独立子进程中执行浏览器自动化任务。
+
+    Args:
+        task_params: 任务参数字典（会被序列化为 JSON 传给子进程）
+        log_callback: 日志回调 (level, message)
+        timeout: 超时秒数
+        cancel_check: 取消检查回调，返回 True 表示应取消
+
+    Returns:
+        结果字典，至少包含 {"success": bool, ...}
+    """
+    # 序列化参数
     try:
         params_json = json.dumps(task_params, ensure_ascii=False)
     except (TypeError, ValueError) as exc:
-        return {"success": False, "error": f"parameter serialization failed: {exc}"}
+        return {"success": False, "error": f"参数序列化失败: {exc}"}
 
-    child_env = os.environ.copy()
-    child_env["GEMINI_AUTOMATION_MARKER"] = "1"
-
+    # 启动子进程
     python_exe = sys.executable
     try:
         proc = subprocess.Popen(
@@ -78,25 +56,24 @@ def run_browser_in_subprocess(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=os.path.dirname(os.path.dirname(__file__)),
-            env=child_env,
+            cwd=os.path.dirname(os.path.dirname(__file__)),  # 项目根目录
+            env=os.environ.copy(),
         )
     except Exception as exc:
-        return {"success": False, "error": f"child process startup failed: {exc}"}
+        return {"success": False, "error": f"子进程启动失败: {exc}"}
 
     child_pid = proc.pid
-    logger.info("[SUBPROCESS] child started (pid=%s)", child_pid)
+    logger.info(f"[SUBPROCESS] 子进程已启动 (PID={child_pid})")
 
+    # 写入参数到 stdin
     try:
-        if proc.stdin is None:
-            raise RuntimeError("stdin pipe unavailable")
         proc.stdin.write(params_json.encode("utf-8"))
         proc.stdin.close()
     except Exception as exc:
         _kill_proc(proc)
-        _cleanup_orphan_browsers(child_pid, reason="stdin-write-failed")
-        return {"success": False, "error": f"failed to write parameters: {exc}"}
+        return {"success": False, "error": f"参数写入失败: {exc}"}
 
+    # 后台线程：实时读取 stderr 日志
     stderr_lines: Deque[str] = deque(maxlen=300)
     log_thread = threading.Thread(
         target=_read_stderr_logs,
@@ -105,6 +82,8 @@ def run_browser_in_subprocess(
     )
     log_thread.start()
 
+    # 后台线程：实时读取 stdout，防止 Linux 下超出 64KB 管道导致死锁挂起。
+    # 仅保留 RESULT 行及少量尾部上下文，避免全量累积导致内存峰值抬升。
     stdout_result_payload: list[str] = []
     stdout_tail: Deque[str] = deque(maxlen=50)
     out_thread = threading.Thread(
@@ -114,58 +93,64 @@ def run_browser_in_subprocess(
     )
     out_thread.start()
 
+    # 等待子进程完成（带超时和取消检查）
     start_time = time.monotonic()
+    result = None
 
     try:
         while True:
             elapsed = time.monotonic() - start_time
 
+            # 检查超时
             if elapsed > timeout:
-                log_callback("error", f"browser child timed out ({timeout}s), terminating")
+                log_callback("error", f"⏰ 浏览器子进程超时 ({timeout}s)，正在终止...")
                 _kill_proc(proc)
-                _cleanup_orphan_browsers(child_pid, reason="timeout")
-                return {"success": False, "error": f"browser operation timeout ({timeout}s)"}
+                return {"success": False, "error": f"浏览器操作超时 ({timeout}s)"}
 
+            # 检查取消
             if cancel_check and cancel_check():
-                log_callback("warning", "cancel requested, terminating browser child")
+                log_callback("warning", "🚫 收到取消请求，正在终止浏览器子进程...")
                 _kill_proc(proc)
-                _cleanup_orphan_browsers(child_pid, reason="cancelled")
-                return {"success": False, "error": "task cancelled"}
+                return {"success": False, "error": "任务已取消"}
 
+            # 检查子进程是否结束
             retcode = proc.poll()
             if retcode is not None:
                 break
 
+            # 短暂等待
             time.sleep(0.3)
+
     except Exception as exc:
         _kill_proc(proc)
-        _cleanup_orphan_browsers(child_pid, reason="wait-loop-error")
-        return {"success": False, "error": f"child process management error: {exc}"}
+        return {"success": False, "error": f"子进程管理异常: {exc}"}
 
+    # 等待各个 IO 线程结束
     log_thread.join(timeout=5)
     out_thread.join(timeout=5)
 
-    logger.info("[SUBPROCESS] child exited (pid=%s, exitcode=%s)", child_pid, proc.returncode)
+    logger.info(f"[SUBPROCESS] 子进程已结束 (PID={child_pid}, exitcode={proc.returncode})")
 
+    # 解析 RESULT: 行（由 stdout 线程捕获）
     if stdout_result_payload:
         try:
             result = json.loads(stdout_result_payload[-1])
-            _cleanup_orphan_browsers(child_pid, reason="completed")
             return result
         except json.JSONDecodeError as exc:
-            _cleanup_orphan_browsers(child_pid, reason="result-json-error")
-            return {"success": False, "error": f"result parse failed: {exc}"}
+            return {"success": False, "error": f"结果解析失败: {exc}"}
 
+    # 没有找到 RESULT 行
     if proc.returncode != 0:
+        # 收集 stderr 中非 LOG: 开头的行作为错误信息
         error_lines = list(stderr_lines)
         if not error_lines and stdout_tail:
+            # 有些运行时会把错误写到 stdout，这里保留少量上下文辅助定位问题。
             error_lines = list(stdout_tail)
         error_msg = "\n".join(error_lines[-10:]) if error_lines else f"exitcode={proc.returncode}"
-        _cleanup_orphan_browsers(child_pid, reason="non-zero-exit")
-        return {"success": False, "error": f"child process failed: {error_msg}"}
 
-    _cleanup_orphan_browsers(child_pid, reason="missing-result")
-    return {"success": False, "error": "child process returned no result"}
+        return {"success": False, "error": f"子进程异常退出: {error_msg}"}
+
+    return {"success": False, "error": "子进程未返回结果"}
 
 
 def _read_stderr_logs(
@@ -173,10 +158,8 @@ def _read_stderr_logs(
     log_callback: Callable[[str, str], None],
     stderr_lines: Deque[str],
 ) -> None:
-    """Forward LOG:* lines from child stderr to the task logger callback."""
+    """后台线程：实时读取 stderr，解析 LOG: 前缀转发给回调。"""
     try:
-        if proc.stderr is None:
-            return
         for raw_line in proc.stderr:
             try:
                 line = raw_line.decode("utf-8", errors="replace").rstrip("\n\r")
@@ -184,6 +167,7 @@ def _read_stderr_logs(
                 continue
 
             if line.startswith("LOG:"):
+                # 格式: LOG:level:message
                 parts = line[4:].split(":", 1)
                 if len(parts) == 2:
                     level, message = parts
@@ -202,10 +186,8 @@ def _read_stdout_worker(
     stdout_result_payload: list[str],
     stdout_tail: Deque[str],
 ) -> None:
-    """Drain child stdout continuously to avoid pipe blockage."""
+    """后台线程：实时提取 stdout 缓冲，避免管道堵塞死锁。"""
     try:
-        if proc.stdout is None:
-            return
         for raw_line in proc.stdout:
             try:
                 line = raw_line.decode("utf-8", errors="replace").rstrip("\n\r")
@@ -225,112 +207,21 @@ def _read_stdout_worker(
 
 
 def _kill_proc(proc: subprocess.Popen) -> None:
-    """Terminate child process and descendants quickly."""
+    """终止子进程及其衍生的所有孙子进程（如 Chrome 等），避免僵尸进程导致内存狂飙。"""
     try:
         import psutil
-
         try:
             parent = psutil.Process(proc.pid)
-            for child in parent.children(recursive=True):
+            children = parent.children(recursive=True)
+            for child in children:
                 try:
                     child.kill()
                 except Exception:
                     pass
         except Exception:
             pass
-
+            
         proc.kill()
         proc.wait(timeout=5)
     except Exception:
         pass
-
-
-def _cleanup_orphan_browsers(root_pid: Optional[int], reason: str = "post-task") -> dict:
-    """Best-effort cleanup for leaked browser descendants/orphans."""
-    stats = {"reason": reason, "candidates": 0, "killed": 0, "remaining": 0}
-    if not _is_strict_cleanup_enabled():
-        logger.debug("[SUBPROCESS] strict cleanup disabled, reason=%s", reason)
-        return stats
-    global_sweep_enabled = _is_global_browser_sweep_enabled()
-
-    try:
-        import psutil
-    except Exception as exc:
-        logger.debug("[SUBPROCESS] cleanup skipped (psutil unavailable): %s", exc)
-        return stats
-
-    tracked_pids: set[int] = set()
-    if root_pid:
-        tracked_pids.add(root_pid)
-        try:
-            root_proc = psutil.Process(root_pid)
-            tracked_pids.update(child.pid for child in root_proc.children(recursive=True))
-        except Exception:
-            pass
-
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-        try:
-            pid = proc.info.get("pid")
-            name = (proc.info.get("name") or "").lower()
-            cmdline = proc.info.get("cmdline") or []
-            has_env_marker = False
-            try:
-                env = proc.environ()
-                has_env_marker = bool(env and env.get("GEMINI_AUTOMATION_MARKER") == "1")
-            except (psutil.AccessDenied, psutil.ZombieProcess, OSError):
-                pass
-
-            should_cleanup = _should_cleanup_browser_process(name, cmdline, has_env_marker)
-            if not should_cleanup and pid in tracked_pids:
-                matched, _ = is_browser_related_process(name, cmdline)
-                should_cleanup = bool(matched)
-            if not should_cleanup and global_sweep_enabled:
-                matched, _ = is_browser_related_process(name, cmdline)
-                should_cleanup = bool(matched)
-
-            if not should_cleanup:
-                continue
-
-            stats["candidates"] += 1
-            proc.kill()
-            try:
-                proc.wait(timeout=3)
-            except Exception:
-                pass
-            stats["killed"] += 1
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
-        except Exception:
-            continue
-
-    for proc in psutil.process_iter(["name", "cmdline"]):
-        try:
-            name = (proc.info.get("name") or "").lower()
-            cmdline = proc.info.get("cmdline") or []
-            has_env_marker = False
-            try:
-                env = proc.environ()
-                has_env_marker = bool(env and env.get("GEMINI_AUTOMATION_MARKER") == "1")
-            except (psutil.AccessDenied, psutil.ZombieProcess, OSError):
-                pass
-
-            should_count_remaining = _should_cleanup_browser_process(name, cmdline, has_env_marker)
-            if not should_count_remaining and global_sweep_enabled:
-                matched, _ = is_browser_related_process(name, cmdline)
-                should_count_remaining = bool(matched)
-
-            if should_count_remaining:
-                stats["remaining"] += 1
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
-        except Exception:
-            continue
-
-    logger.info(
-        "[SUBPROCESS] cleanup reason=%s candidates=%d killed=%d remaining=%d",
-        stats["reason"],
-        stats["candidates"],
-        stats["killed"],
-        stats["remaining"],
-    )
-    return stats

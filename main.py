@@ -1,4 +1,3 @@
-# Triggering Zeabur Redeployment
 import json, time, os, asyncio, uuid, ssl, re, yaml, shutil, base64
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Union, Dict, Any
@@ -130,10 +129,8 @@ def get_request_quota_type(model_name: Optional[str]) -> str:
 
 # ---------- 日志配置 ----------
 
-# 内存日志缓冲区（可通过环境变量收紧，避免日志正文过大抬升常驻内存）
-_MEMORY_LOG_BUFFER_SIZE = max(100, int(os.getenv("MEMORY_LOG_BUFFER_SIZE", "1000")))
-_MEMORY_LOG_MAX_CHARS = max(200, int(os.getenv("MEMORY_LOG_MAX_CHARS", "800")))
-log_buffer = deque(maxlen=_MEMORY_LOG_BUFFER_SIZE)
+# 内存日志缓冲区 (保留最近 1000 条日志，重启后清空)
+log_buffer = deque(maxlen=1000)
 log_lock = Lock()
 
 # 统计数据持久化
@@ -328,26 +325,16 @@ def build_recent_conversation_entry(
 
 class MemoryLogHandler(logging.Handler):
     """自定义日志处理器，将日志写入内存缓冲区"""
-
-    @staticmethod
-    def _trim_message(message: str) -> str:
-        if not isinstance(message, str):
-            message = str(message)
-        if len(message) <= _MEMORY_LOG_MAX_CHARS:
-            return message
-        trimmed = message[:_MEMORY_LOG_MAX_CHARS]
-        return f"{trimmed}...(truncated {len(message) - _MEMORY_LOG_MAX_CHARS} chars)"
-
     def emit(self, record):
+        log_entry = self.format(record)
         # 转换为北京时间（UTC+8）
         beijing_tz = timezone(timedelta(hours=8))
         beijing_time = datetime.fromtimestamp(record.created, tz=beijing_tz)
-        message = self._trim_message(record.getMessage())
         with log_lock:
             log_buffer.append({
                 "time": beijing_time.strftime("%Y-%m-%d %H:%M:%S"),
                 "level": record.levelname,
-                "message": message
+                "message": record.getMessage()
             })
 
 # 配置日志

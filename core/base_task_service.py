@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import sys
 import threading
 import time
 from collections import deque
@@ -26,15 +24,6 @@ logger = logging.getLogger("gemini.base_task")
 
 class TaskCancelledError(Exception):
     """Raised to cooperatively stop task execution."""
-
-
-def _read_positive_int_env(name: str, default: int) -> int:
-    raw = os.getenv(name, str(default)).strip()
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return value if value > 0 else default
 
 
 class TaskStatus(str, Enum):
@@ -117,7 +106,6 @@ class BaseTaskService(Generic[T]):
         self._max_completed_tasks = 10
         self._max_logs_per_task = 120
         self._max_results_per_task = 200
-        self._max_log_message_chars = _read_positive_int_env("TASK_LOG_MAX_CHARS", 800)
 
     def get_task(self, task_id: str) -> Optional[T]:
         return self._tasks.get(task_id)
@@ -251,24 +239,17 @@ class BaseTaskService(Generic[T]):
         raise NotImplementedError
 
     def _append_log(self, task: T, level: str, message: str) -> None:
-        message_text = str(message)
-        if len(message_text) > self._max_log_message_chars:
-            message_text = (
-                f"{message_text[:self._max_log_message_chars]}"
-                f"...(truncated {len(message_text) - self._max_log_message_chars} chars)"
-            )
-
         entry = {
             "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             "level": level,
-            "message": message_text,
+            "message": message,
         }
         with self._log_lock:
             task.logs.append(entry)
             if len(task.logs) > self._max_logs_per_task:
                 task.logs = task.logs[-self._max_logs_per_task:]
 
-        log_message = f"[{self._log_prefix}] {message_text}"
+        log_message = f"[{self._log_prefix}] {message}"
         if level == "warning":
             logger.warning(log_message)
         elif level == "error":
@@ -284,7 +265,7 @@ class BaseTaskService(Generic[T]):
                 "login task cancelled:",
                 "register task cancelled:",
             )
-            if not any(message_text.startswith(x) for x in safe_messages):
+            if not any(message.startswith(x) for x in safe_messages):
                 raise TaskCancelledError(task.cancel_reason or "cancelled")
 
     def _compact_result_for_history(self, result: Any) -> Dict[str, Any]:
@@ -361,40 +342,12 @@ class BaseTaskService(Generic[T]):
             )
 
     async def _force_memory_release(self) -> None:
-        """Best-effort memory compaction after task completion."""
+        """Best-effort GC after task completion."""
         await asyncio.sleep(2)
-        gc_done = False
-        trim_done = False
-        started_at = time.perf_counter()
         try:
             import gc
 
             gc.collect()
-            gc_done = True
-
-            # Linux containers may keep RSS high after GC due to allocator arenas.
-            if sys.platform.startswith("linux"):
-                try:
-                    import ctypes
-                    import ctypes.util
-
-                    libc_name = ctypes.util.find_library("c")
-                    libc = ctypes.CDLL(libc_name) if libc_name else ctypes.CDLL("libc.so.6")
-                    malloc_trim = getattr(libc, "malloc_trim", None)
-                    if malloc_trim:
-                        malloc_trim.argtypes = [ctypes.c_size_t]
-                        malloc_trim.restype = ctypes.c_int
-                        trim_done = bool(malloc_trim(0))
-                except Exception as trim_exc:
-                    logger.debug("[%s] malloc_trim failed: %s", self._log_prefix, trim_exc)
-
-            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-            logger.info(
-                "[%s] memory_cleanup gc_done=%s trim_done=%s elapsed_ms=%d",
-                self._log_prefix,
-                gc_done,
-                trim_done,
-                elapsed_ms,
-            )
+            logger.info("[%s] task history compacted and GC completed", self._log_prefix)
         except Exception as e:
             logger.debug("[%s] memory cleanup error: %s", self._log_prefix, e)
