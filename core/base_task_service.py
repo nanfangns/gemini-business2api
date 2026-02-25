@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import threading
 import time
 from collections import deque
@@ -342,12 +343,40 @@ class BaseTaskService(Generic[T]):
             )
 
     async def _force_memory_release(self) -> None:
-        """Best-effort GC after task completion."""
+        """Best-effort memory compaction after task completion."""
         await asyncio.sleep(2)
+        gc_done = False
+        trim_done = False
+        started_at = time.perf_counter()
         try:
             import gc
 
             gc.collect()
-            logger.info("[%s] task history compacted and GC completed", self._log_prefix)
+            gc_done = True
+
+            # Linux containers may keep RSS high after GC due to allocator arenas.
+            if sys.platform.startswith("linux"):
+                try:
+                    import ctypes
+                    import ctypes.util
+
+                    libc_name = ctypes.util.find_library("c")
+                    libc = ctypes.CDLL(libc_name) if libc_name else ctypes.CDLL("libc.so.6")
+                    malloc_trim = getattr(libc, "malloc_trim", None)
+                    if malloc_trim:
+                        malloc_trim.argtypes = [ctypes.c_size_t]
+                        malloc_trim.restype = ctypes.c_int
+                        trim_done = bool(malloc_trim(0))
+                except Exception as trim_exc:
+                    logger.debug("[%s] malloc_trim failed: %s", self._log_prefix, trim_exc)
+
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+            logger.info(
+                "[%s] memory_cleanup gc_done=%s trim_done=%s elapsed_ms=%d",
+                self._log_prefix,
+                gc_done,
+                trim_done,
+                elapsed_ms,
+            )
         except Exception as e:
             logger.debug("[%s] memory cleanup error: %s", self._log_prefix, e)
