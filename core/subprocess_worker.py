@@ -29,10 +29,16 @@ _AUTOMATION_CMD_MARKERS = (
     "uc-profile-",
 )
 _DEFAULT_STRICT_AUTOMATION_CLEANUP = "1" if sys.platform.startswith("linux") else "0"
+_DEFAULT_GLOBAL_BROWSER_SWEEP = "1" if sys.platform.startswith("linux") else "0"
 
 
 def _is_strict_cleanup_enabled() -> bool:
     raw = os.getenv("STRICT_AUTOMATION_CLEANUP", _DEFAULT_STRICT_AUTOMATION_CLEANUP)
+    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _is_global_browser_sweep_enabled() -> bool:
+    raw = os.getenv("AUTOMATION_GLOBAL_BROWSER_SWEEP", _DEFAULT_GLOBAL_BROWSER_SWEEP)
     return str(raw).strip().lower() not in {"0", "false", "no", "off"}
 
 
@@ -245,6 +251,7 @@ def _cleanup_orphan_browsers(root_pid: Optional[int], reason: str = "post-task")
     if not _is_strict_cleanup_enabled():
         logger.debug("[SUBPROCESS] strict cleanup disabled, reason=%s", reason)
         return stats
+    global_sweep_enabled = _is_global_browser_sweep_enabled()
 
     try:
         import psutil
@@ -277,6 +284,9 @@ def _cleanup_orphan_browsers(root_pid: Optional[int], reason: str = "post-task")
             if not should_cleanup and pid in tracked_pids:
                 matched, _ = is_browser_related_process(name, cmdline)
                 should_cleanup = bool(matched)
+            if not should_cleanup and global_sweep_enabled:
+                matched, _ = is_browser_related_process(name, cmdline)
+                should_cleanup = bool(matched)
 
             if not should_cleanup:
                 continue
@@ -304,7 +314,12 @@ def _cleanup_orphan_browsers(root_pid: Optional[int], reason: str = "post-task")
             except (psutil.AccessDenied, psutil.ZombieProcess, OSError):
                 pass
 
-            if _should_cleanup_browser_process(name, cmdline, has_env_marker):
+            should_count_remaining = _should_cleanup_browser_process(name, cmdline, has_env_marker)
+            if not should_count_remaining and global_sweep_enabled:
+                matched, _ = is_browser_related_process(name, cmdline)
+                should_count_remaining = bool(matched)
+
+            if should_count_remaining:
                 stats["remaining"] += 1
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue

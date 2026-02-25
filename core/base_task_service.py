@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import threading
 import time
@@ -25,6 +26,15 @@ logger = logging.getLogger("gemini.base_task")
 
 class TaskCancelledError(Exception):
     """Raised to cooperatively stop task execution."""
+
+
+def _read_positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 class TaskStatus(str, Enum):
@@ -107,6 +117,7 @@ class BaseTaskService(Generic[T]):
         self._max_completed_tasks = 10
         self._max_logs_per_task = 120
         self._max_results_per_task = 200
+        self._max_log_message_chars = _read_positive_int_env("TASK_LOG_MAX_CHARS", 800)
 
     def get_task(self, task_id: str) -> Optional[T]:
         return self._tasks.get(task_id)
@@ -240,17 +251,24 @@ class BaseTaskService(Generic[T]):
         raise NotImplementedError
 
     def _append_log(self, task: T, level: str, message: str) -> None:
+        message_text = str(message)
+        if len(message_text) > self._max_log_message_chars:
+            message_text = (
+                f"{message_text[:self._max_log_message_chars]}"
+                f"...(truncated {len(message_text) - self._max_log_message_chars} chars)"
+            )
+
         entry = {
             "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             "level": level,
-            "message": message,
+            "message": message_text,
         }
         with self._log_lock:
             task.logs.append(entry)
             if len(task.logs) > self._max_logs_per_task:
                 task.logs = task.logs[-self._max_logs_per_task:]
 
-        log_message = f"[{self._log_prefix}] {message}"
+        log_message = f"[{self._log_prefix}] {message_text}"
         if level == "warning":
             logger.warning(log_message)
         elif level == "error":
@@ -266,7 +284,7 @@ class BaseTaskService(Generic[T]):
                 "login task cancelled:",
                 "register task cancelled:",
             )
-            if not any(message.startswith(x) for x in safe_messages):
+            if not any(message_text.startswith(x) for x in safe_messages):
                 raise TaskCancelledError(task.cancel_reason or "cancelled")
 
     def _compact_result_for_history(self, result: Any) -> Dict[str, Any]:
