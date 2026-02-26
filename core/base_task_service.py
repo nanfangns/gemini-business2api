@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -21,9 +22,53 @@ from core.account import update_accounts_config
 
 logger = logging.getLogger("gemini.base_task")
 
+_PROCESS_RECYCLE_LOCK = threading.Lock()
+_PROCESS_RECYCLE_SCHEDULED = False
+
 
 class TaskCancelledError(Exception):
     """Raised to cooperatively stop task execution."""
+
+
+def _read_positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _read_env_text(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip()
+
+
+def _get_current_rss_mb() -> float:
+    try:
+        import psutil
+
+        return psutil.Process().memory_info().rss / (1024 * 1024)
+    except Exception:
+        return 0.0
+
+
+def _schedule_process_exit(delay_ms: int) -> bool:
+    global _PROCESS_RECYCLE_SCHEDULED
+    with _PROCESS_RECYCLE_LOCK:
+        if _PROCESS_RECYCLE_SCHEDULED:
+            return False
+        _PROCESS_RECYCLE_SCHEDULED = True
+
+    def _exit_later() -> None:
+        time.sleep(max(0.1, delay_ms / 1000))
+        # Exit the process so container/runtime supervisor recreates a clean process.
+        os._exit(0)
+
+    threading.Thread(target=_exit_later, daemon=True, name="task-process-recycle").start()
+    return True
 
 
 class TaskStatus(str, Enum):
@@ -106,6 +151,15 @@ class BaseTaskService(Generic[T]):
         self._max_completed_tasks = 10
         self._max_logs_per_task = 120
         self._max_results_per_task = 200
+        self._process_recycle_mode = _read_env_text("TASK_PROCESS_RECYCLE_MODE", "off").lower()
+        self._process_recycle_rss_mb = _read_positive_int_env("TASK_PROCESS_RECYCLE_RSS_MB", 220)
+        self._process_recycle_delay_ms = _read_positive_int_env("TASK_PROCESS_RECYCLE_DELAY_MS", 800)
+        prefix_raw = _read_env_text("TASK_PROCESS_RECYCLE_PREFIXES", "REGISTER,REFRESH")
+        self._process_recycle_prefixes = {
+            token.strip().upper()
+            for token in prefix_raw.split(",")
+            if token.strip()
+        }
 
     def get_task(self, task_id: str) -> Optional[T]:
         return self._tasks.get(task_id)
@@ -216,7 +270,11 @@ class BaseTaskService(Generic[T]):
             self._clear_cancel_hooks(task.id)
             self._compact_task_payload(task)
             self._cleanup_finished_tasks()
-            asyncio.create_task(self._force_memory_release())
+            if self._process_recycle_mode in ("", "off", "disabled", "0", "false", "no"):
+                asyncio.create_task(self._force_memory_release())
+            else:
+                await self._force_memory_release()
+                await self._maybe_recycle_process(task)
 
     def _add_cancel_hook(self, task_id: str, hook: Callable[[], None]) -> None:
         with self._cancel_hooks_lock:
@@ -351,3 +409,47 @@ class BaseTaskService(Generic[T]):
             logger.info("[%s] task history compacted and GC completed", self._log_prefix)
         except Exception as e:
             logger.debug("[%s] memory cleanup error: %s", self._log_prefix, e)
+
+    async def _maybe_recycle_process(self, task: T) -> None:
+        mode = self._process_recycle_mode
+        if mode in ("", "off", "disabled", "0", "false", "no"):
+            return
+
+        if self._process_recycle_prefixes and self._log_prefix.upper() not in self._process_recycle_prefixes:
+            return
+
+        rss_mb = _get_current_rss_mb()
+        should_recycle = False
+        reason = ""
+        if mode in ("always", "force"):
+            should_recycle = True
+            reason = "always"
+        elif mode in ("rss", "rss_threshold", "threshold"):
+            should_recycle = rss_mb >= self._process_recycle_rss_mb
+            reason = "rss-threshold"
+        else:
+            logger.warning("[%s] unknown TASK_PROCESS_RECYCLE_MODE=%s (skip)", self._log_prefix, mode)
+            return
+
+        if not should_recycle:
+            logger.info(
+                "[%s] process recycle skipped mode=%s rss_mb=%.1f threshold_mb=%d",
+                self._log_prefix,
+                mode,
+                rss_mb,
+                self._process_recycle_rss_mb,
+            )
+            return
+
+        scheduled = _schedule_process_exit(self._process_recycle_delay_ms)
+        if scheduled:
+            logger.warning(
+                "[%s] process recycle scheduled reason=%s task_id=%s status=%s rss_mb=%.1f threshold_mb=%d delay_ms=%d",
+                self._log_prefix,
+                reason,
+                task.id,
+                task.status.value,
+                rss_mb,
+                self._process_recycle_rss_mb,
+                self._process_recycle_delay_ms,
+            )
