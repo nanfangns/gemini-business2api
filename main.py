@@ -1,4 +1,4 @@
-import json, time, os, asyncio, uuid, ssl, re, yaml, shutil, base64
+import json, time, os, asyncio, uuid, ssl, re, yaml, shutil, base64, sys
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Union, Dict, Any
 from pathlib import Path
@@ -129,8 +129,28 @@ def get_request_quota_type(model_name: Optional[str]) -> str:
 
 # ---------- 日志配置 ----------
 
-# 内存日志缓冲区 (保留最近 1000 条日志，重启后清空)
-log_buffer = deque(maxlen=1000)
+def _read_positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _read_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+# 低内存启动模式：默认开启（可通过 LOW_MEMORY_STARTUP=0 关闭）
+LOW_MEMORY_STARTUP = _read_bool_env("LOW_MEMORY_STARTUP", True)
+
+# 内存日志缓冲区（低内存模式默认更小，减少常驻）
+_log_buffer_default = 300 if LOW_MEMORY_STARTUP else 1000
+log_buffer = deque(maxlen=_read_positive_int_env("LOG_BUFFER_MAXLEN", _log_buffer_default))
 log_lock = Lock()
 
 # 统计数据持久化
@@ -177,7 +197,51 @@ async def load_stats():
     if isinstance(data.get("rate_limit_timestamps"), list):
         data["rate_limit_timestamps"] = deque(data["rate_limit_timestamps"], maxlen=10000)
 
+    # 低内存启动模式：仅保留必要计数，丢弃重对象历史，避免重启后常驻偏高
+    if LOW_MEMORY_STARTUP:
+        req_maxlen = _read_positive_int_env("STARTUP_REQUEST_TIMESTAMPS_MAXLEN", 2000)
+        fail_maxlen = _read_positive_int_env("STARTUP_FAILURE_TIMESTAMPS_MAXLEN", 500)
+        rate_maxlen = _read_positive_int_env("STARTUP_RATE_LIMIT_TIMESTAMPS_MAXLEN", 500)
+        conv_keep = _read_positive_int_env("STARTUP_RECENT_CONVERSATIONS_MAXLEN", 60)
+
+        data["request_timestamps"] = deque(list(data.get("request_timestamps", []))[-req_maxlen:], maxlen=req_maxlen)
+        data["failure_timestamps"] = deque(list(data.get("failure_timestamps", []))[-fail_maxlen:], maxlen=fail_maxlen)
+        data["rate_limit_timestamps"] = deque(list(data.get("rate_limit_timestamps", []))[-rate_maxlen:], maxlen=rate_maxlen)
+        data["model_request_timestamps"] = {}
+        data["visitor_ips"] = {}
+        data["account_conversations"] = {}
+        if isinstance(data.get("recent_conversations"), list):
+            data["recent_conversations"] = data["recent_conversations"][-conv_keep:]
+        else:
+            data["recent_conversations"] = []
+
     return data
+
+
+def _force_startup_memory_release() -> None:
+    """Best-effort startup memory trim, mainly for Linux containers."""
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+
+    if not sys.platform.startswith("linux"):
+        return
+
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc_name = ctypes.util.find_library("c")
+        libc = ctypes.CDLL(libc_name) if libc_name else ctypes.CDLL("libc.so.6")
+        malloc_trim = getattr(libc, "malloc_trim", None)
+        if malloc_trim:
+            malloc_trim.argtypes = [ctypes.c_size_t]
+            malloc_trim.restype = ctypes.c_int
+            malloc_trim(0)
+    except Exception:
+        pass
 
 async def save_stats(stats):
     """保存统计数据（已优化：内部使用 storage 缓冲区，非阻塞）"""
@@ -879,6 +943,7 @@ async def startup_event():
     global_stats.setdefault("recent_conversations", [])
     uptime_tracker.configure_storage(os.path.join(DATA_DIR, "uptime.json"))
     uptime_tracker.load_heartbeats()
+    _force_startup_memory_release()
     logger.info(f"[SYSTEM] 统计数据已加载: {global_stats['total_requests']} 次请求, {global_stats['total_visitors']} 位访客")
 
     # 启动缓存清理任务
