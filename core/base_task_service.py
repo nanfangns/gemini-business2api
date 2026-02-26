@@ -52,7 +52,30 @@ def _get_current_rss_mb() -> float:
 
         return psutil.Process().memory_info().rss / (1024 * 1024)
     except Exception:
-        return 0.0
+        pass
+
+    # Linux fallback when psutil is unavailable.
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return float(parts[1]) / 1024.0
+    except Exception:
+        pass
+
+    try:
+        with open("/proc/self/statm", "r", encoding="utf-8") as f:
+            parts = f.read().strip().split()
+        if len(parts) >= 2:
+            rss_pages = int(parts[1])
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            return (rss_pages * page_size) / (1024 * 1024)
+    except Exception:
+        pass
+
+    return 0.0
 
 
 def _schedule_process_exit(delay_ms: int) -> bool:
@@ -151,8 +174,8 @@ class BaseTaskService(Generic[T]):
         self._max_completed_tasks = 10
         self._max_logs_per_task = 120
         self._max_results_per_task = 200
-        self._process_recycle_mode = _read_env_text("TASK_PROCESS_RECYCLE_MODE", "off").lower()
-        self._process_recycle_rss_mb = _read_positive_int_env("TASK_PROCESS_RECYCLE_RSS_MB", 220)
+        self._process_recycle_mode = _read_env_text("TASK_PROCESS_RECYCLE_MODE", "rss_threshold").lower()
+        self._process_recycle_rss_mb = _read_positive_int_env("TASK_PROCESS_RECYCLE_RSS_MB", 160)
         self._process_recycle_delay_ms = _read_positive_int_env("TASK_PROCESS_RECYCLE_DELAY_MS", 800)
         prefix_raw = _read_env_text("TASK_PROCESS_RECYCLE_PREFIXES", "REGISTER,REFRESH")
         self._process_recycle_prefixes = {
@@ -425,8 +448,12 @@ class BaseTaskService(Generic[T]):
             should_recycle = True
             reason = "always"
         elif mode in ("rss", "rss_threshold", "threshold"):
-            should_recycle = rss_mb >= self._process_recycle_rss_mb
-            reason = "rss-threshold"
+            if rss_mb <= 0:
+                should_recycle = True
+                reason = "rss-unavailable-fallback"
+            else:
+                should_recycle = rss_mb >= self._process_recycle_rss_mb
+                reason = "rss-threshold"
         else:
             logger.warning("[%s] unknown TASK_PROCESS_RECYCLE_MODE=%s (skip)", self._log_prefix, mode)
             return
