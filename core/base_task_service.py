@@ -183,6 +183,9 @@ class BaseTaskService(Generic[T]):
             for token in prefix_raw.split(",")
             if token.strip()
         }
+        hard_restart_raw = _read_env_text("TASK_PROCESS_HARD_RESTART", "1").lower()
+        self._process_hard_restart_enabled = hard_restart_raw not in ("", "0", "false", "no", "off", "disabled")
+        self._process_hard_restart_delay_ms = _read_positive_int_env("TASK_PROCESS_HARD_RESTART_DELAY_MS", 120)
 
     def get_task(self, task_id: str) -> Optional[T]:
         return self._tasks.get(task_id)
@@ -293,7 +296,20 @@ class BaseTaskService(Generic[T]):
             self._clear_cancel_hooks(task.id)
             self._compact_task_payload(task)
             self._cleanup_finished_tasks()
-            if self._process_recycle_mode in ("", "off", "disabled", "0", "false", "no"):
+            if self._process_hard_restart_enabled and (
+                not self._process_recycle_prefixes or self._log_prefix.upper() in self._process_recycle_prefixes
+            ):
+                await self._force_memory_release()
+                scheduled = _schedule_process_exit(self._process_hard_restart_delay_ms)
+                if scheduled:
+                    logger.warning(
+                        "[%s] hard process restart scheduled task_id=%s status=%s delay_ms=%d",
+                        self._log_prefix,
+                        task.id,
+                        task.status.value,
+                        self._process_hard_restart_delay_ms,
+                    )
+            elif self._process_recycle_mode in ("", "off", "disabled", "0", "false", "no"):
                 asyncio.create_task(self._force_memory_release())
             else:
                 await self._force_memory_release()
