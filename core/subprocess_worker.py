@@ -1,14 +1,16 @@
 """
-子进程调用包装（主进程侧）
+Subprocess runner wrapper used by register/refresh services.
 
-通过 subprocess.Popen 启动 browser_task_runner.py，
-传递 JSON 参数，接收日志和结果。
-子进程退出后 OS 回收全部浏览器相关内存。
+It starts `browser_task_runner.py`, forwards JSON params via stdin, streams logs
+from stderr, and parses final RESULT payload from stdout.
 """
+
+from __future__ import annotations
 
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -16,12 +18,46 @@ import time
 from collections import deque
 from typing import Callable, Deque, Optional
 
+from core.browser_process_utils import has_automation_marker, is_browser_related_process
+
 logger = logging.getLogger("gemini.subprocess_worker")
 
-# 子进程脚本路径
 _RUNNER_SCRIPT = os.path.join(os.path.dirname(__file__), "browser_task_runner.py")
-# 默认超时（秒）
 _DEFAULT_TIMEOUT = 300
+_AUTOMATION_MARKER_KEY = "GEMINI_AUTOMATION_MARKER"
+_STRICT_CLEANUP_ENABLED = os.getenv("STRICT_AUTOMATION_CLEANUP", "1").strip().lower() not in {
+    "",
+    "0",
+    "false",
+    "no",
+    "off",
+}
+
+
+def _build_subprocess_env() -> dict:
+    env = os.environ.copy()
+    env[_AUTOMATION_MARKER_KEY] = "1"
+    return env
+
+
+def _build_popen_kwargs() -> dict:
+    kwargs: dict = {}
+    if os.name == "posix":
+        # New session lets us kill the whole process group safely.
+        kwargs["start_new_session"] = True
+    elif os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    return kwargs
+
+
+def _close_proc_pipes(proc: subprocess.Popen) -> None:
+    for pipe in (proc.stdin, proc.stdout, proc.stderr):
+        if not pipe:
+            continue
+        try:
+            pipe.close()
+        except Exception:
+            pass
 
 
 def run_browser_in_subprocess(
@@ -30,25 +66,12 @@ def run_browser_in_subprocess(
     timeout: int = _DEFAULT_TIMEOUT,
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> dict:
-    """
-    在独立子进程中执行浏览器自动化任务。
-
-    Args:
-        task_params: 任务参数字典（会被序列化为 JSON 传给子进程）
-        log_callback: 日志回调 (level, message)
-        timeout: 超时秒数
-        cancel_check: 取消检查回调，返回 True 表示应取消
-
-    Returns:
-        结果字典，至少包含 {"success": bool, ...}
-    """
-    # 序列化参数
+    """Run browser automation in a dedicated subprocess."""
     try:
         params_json = json.dumps(task_params, ensure_ascii=False)
     except (TypeError, ValueError) as exc:
-        return {"success": False, "error": f"参数序列化失败: {exc}"}
+        return {"success": False, "error": f"parameter serialization failed: {exc}"}
 
-    # 启动子进程
     python_exe = sys.executable
     try:
         proc = subprocess.Popen(
@@ -56,112 +79,129 @@ def run_browser_in_subprocess(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=os.path.dirname(os.path.dirname(__file__)),  # 项目根目录
-            env=os.environ.copy(),
+            cwd=os.path.dirname(os.path.dirname(__file__)),
+            env=_build_subprocess_env(),
+            **_build_popen_kwargs(),
         )
     except Exception as exc:
-        return {"success": False, "error": f"子进程启动失败: {exc}"}
+        return {"success": False, "error": f"failed to start subprocess: {exc}"}
 
     child_pid = proc.pid
-    logger.info(f"[SUBPROCESS] 子进程已启动 (PID={child_pid})")
+    logger.info("[SUBPROCESS] started pid=%s", child_pid)
 
-    # 写入参数到 stdin
-    try:
-        proc.stdin.write(params_json.encode("utf-8"))
-        proc.stdin.close()
-    except Exception as exc:
-        _kill_proc(proc)
-        return {"success": False, "error": f"参数写入失败: {exc}"}
-
-    # 后台线程：实时读取 stderr 日志
-    stderr_lines = []
-    log_thread = threading.Thread(
-        target=_read_stderr_logs,
-        args=(proc, log_callback, stderr_lines),
-        daemon=True,
-    )
-    log_thread.start()
-
-    # 后台线程：实时读取 stdout，防止 Linux 下超出 64KB 管道导致死锁挂起
-    stdout_lines = []
-    out_thread = threading.Thread(
-        target=_read_stdout_worker,
-        args=(proc, stdout_lines),
-        daemon=True,
-    )
-    out_thread.start()
-
-    # 等待子进程完成（带超时和取消检查）
-    start_time = time.monotonic()
-    result = None
+    stderr_lines: Deque[str] = deque(maxlen=300)
+    stdout_lines: Deque[str] = deque(maxlen=500)
+    log_thread: Optional[threading.Thread] = None
+    out_thread: Optional[threading.Thread] = None
+    cleanup_reason = "unknown"
 
     try:
+        try:
+            if not proc.stdin:
+                raise RuntimeError("stdin pipe unavailable")
+            proc.stdin.write(params_json.encode("utf-8"))
+            proc.stdin.close()
+        except Exception as exc:
+            cleanup_reason = "stdin_write_failed"
+            _kill_proc(proc)
+            return {"success": False, "error": f"failed to write params: {exc}"}
+
+        log_thread = threading.Thread(
+            target=_read_stderr_logs,
+            args=(proc, log_callback, stderr_lines),
+            daemon=True,
+        )
+        log_thread.start()
+
+        out_thread = threading.Thread(
+            target=_read_stdout_worker,
+            args=(proc, stdout_lines),
+            daemon=True,
+        )
+        out_thread.start()
+
+        start_time = time.monotonic()
         while True:
             elapsed = time.monotonic() - start_time
-
-            # 检查超时
             if elapsed > timeout:
-                log_callback("error", f"⏰ 浏览器子进程超时 ({timeout}s)，正在终止...")
+                cleanup_reason = "timeout"
+                log_callback("error", f"browser subprocess timeout ({timeout}s), terminating")
                 _kill_proc(proc)
-                return {"success": False, "error": f"浏览器操作超时 ({timeout}s)"}
+                return {"success": False, "error": f"browser timeout ({timeout}s)"}
 
-            # 检查取消
             if cancel_check and cancel_check():
-                log_callback("warning", "🚫 收到取消请求，正在终止浏览器子进程...")
+                cleanup_reason = "cancelled"
+                log_callback("warning", "cancel requested, terminating browser subprocess")
                 _kill_proc(proc)
-                return {"success": False, "error": "任务已取消"}
+                return {"success": False, "error": "task cancelled"}
 
-            # 检查子进程是否结束
-            retcode = proc.poll()
-            if retcode is not None:
+            if proc.poll() is not None:
+                cleanup_reason = "normal_exit"
                 break
 
-            # 短暂等待
             time.sleep(0.3)
 
-    except Exception as exc:
-        _kill_proc(proc)
-        return {"success": False, "error": f"子进程管理异常: {exc}"}
+        if log_thread:
+            log_thread.join(timeout=5)
+        if out_thread:
+            out_thread.join(timeout=5)
 
-    # 等待各个 IO 线程结束
-    log_thread.join(timeout=5)
-    out_thread.join(timeout=5)
-
-    # 合并 stdout 获取结果
-    try:
         stdout_data = "".join(stdout_lines)
-    except Exception:
-        stdout_data = ""
+        logger.info("[SUBPROCESS] exited pid=%s code=%s", child_pid, proc.returncode)
 
-    logger.info(f"[SUBPROCESS] 子进程已结束 (PID={child_pid}, exitcode={proc.returncode})")
-
-    # 解析 RESULT: 行
-    for line in stdout_data.splitlines():
-        if line.startswith("RESULT:"):
+        for line in stdout_data.splitlines():
+            if not line.startswith("RESULT:"):
+                continue
             try:
-                result = json.loads(line[7:])
-                return result
+                return json.loads(line[7:])
             except json.JSONDecodeError as exc:
-                return {"success": False, "error": f"结果解析失败: {exc}"}
+                return {"success": False, "error": f"result parse failed: {exc}"}
 
-    # 没有找到 RESULT 行
-    if proc.returncode != 0:
-        # 收集 stderr 中非 LOG: 开头的行作为错误信息
-        error_lines = [l for l in stderr_lines if not l.startswith("LOG:")]
-        error_msg = "\n".join(error_lines[-10:]) if error_lines else f"exitcode={proc.returncode}"
-        
-        return {"success": False, "error": f"子进程异常退出: {error_msg}"}
+        if proc.returncode != 0:
+            error_lines = [line for line in stderr_lines if not line.startswith("LOG:")]
+            error_msg = "\n".join(error_lines[-10:]) if error_lines else f"exitcode={proc.returncode}"
+            return {"success": False, "error": f"subprocess abnormal exit: {error_msg}"}
 
-    return {"success": False, "error": "子进程未返回结果"}
+        return {"success": False, "error": "subprocess returned no result"}
+    except Exception as exc:
+        cleanup_reason = "run_exception"
+        _kill_proc(proc)
+        return {"success": False, "error": f"subprocess management exception: {exc}"}
+    finally:
+        if log_thread and log_thread.is_alive():
+            log_thread.join(timeout=2)
+        if out_thread and out_thread.is_alive():
+            out_thread.join(timeout=2)
+
+        if proc.poll() is None:
+            _kill_proc(proc)
+        else:
+            _kill_process_group(proc.pid)
+
+        if _STRICT_CLEANUP_ENABLED:
+            stats = _cleanup_orphan_browsers()
+            if stats["candidates"] or stats["remaining"]:
+                logger.info(
+                    "[SUBPROCESS] cleanup stats reason=%s candidates=%d killed=%d remaining=%d",
+                    cleanup_reason,
+                    stats["candidates"],
+                    stats["killed"],
+                    stats["remaining"],
+                )
+
+        _close_proc_pipes(proc)
+        stderr_lines.clear()
+        stdout_lines.clear()
 
 
 def _read_stderr_logs(
     proc: subprocess.Popen,
     log_callback: Callable[[str, str], None],
-    stderr_lines: list,
+    stderr_lines: Deque[str],
 ) -> None:
-    """后台线程：实时读取 stderr，解析 LOG: 前缀转发给回调。"""
     try:
+        if not proc.stderr:
+            return
         for raw_line in proc.stderr:
             try:
                 line = raw_line.decode("utf-8", errors="replace").rstrip("\n\r")
@@ -169,8 +209,8 @@ def _read_stderr_logs(
                 continue
 
             if line.startswith("LOG:"):
-                # 格式: LOG:level:message
-                parts = line[4:].split(":", 1)
+                payload = line[4:]
+                parts = payload.split(":", 1)
                 if len(parts) == 2:
                     level, message = parts
                     try:
@@ -183,13 +223,13 @@ def _read_stderr_logs(
         pass
 
 
-def _read_stdout_worker(proc: subprocess.Popen, stdout_lines: list) -> None:
-    """后台线程：实时提取 stdout 缓冲，避免管道堵塞死锁。"""
+def _read_stdout_worker(proc: subprocess.Popen, stdout_lines: Deque[str]) -> None:
     try:
+        if not proc.stdout:
+            return
         for raw_line in proc.stdout:
             try:
-                line = raw_line.decode("utf-8", errors="replace")
-                stdout_lines.append(line)
+                stdout_lines.append(raw_line.decode("utf-8", errors="replace"))
             except Exception:
                 continue
     except Exception:
@@ -197,9 +237,13 @@ def _read_stdout_worker(proc: subprocess.Popen, stdout_lines: list) -> None:
 
 
 def _kill_proc(proc: subprocess.Popen) -> None:
-    """终止子进程及其衍生的所有孙子进程（如 Chrome 等），避免僵尸进程导致内存狂飙。"""
+    """Terminate subprocess and descendants."""
     try:
+        if os.name == "posix":
+            _kill_process_group(proc.pid)
+
         import psutil
+
         try:
             parent = psutil.Process(proc.pid)
             children = parent.children(recursive=True)
@@ -210,8 +254,101 @@ def _kill_proc(proc: subprocess.Popen) -> None:
                     pass
         except Exception:
             pass
-            
-        proc.kill()
-        proc.wait(timeout=5)
+
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+        except Exception:
+            pass
     except Exception:
         pass
+
+
+def _kill_process_group(root_pid: int) -> None:
+    if os.name != "posix":
+        return
+    try:
+        pgid = os.getpgid(root_pid)
+    except Exception:
+        return
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except Exception:
+        pass
+
+
+def _cleanup_orphan_browsers() -> dict:
+    stats = {"candidates": 0, "killed": 0, "remaining": 0}
+    try:
+        import psutil
+
+        candidates = []
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                name = (proc.info.get("name") or "").lower()
+                cmdline = proc.info.get("cmdline") or []
+                matched, _ = is_browser_related_process(name, cmdline)
+                if not matched:
+                    continue
+
+                cmdline_text = " ".join(cmdline).lower()
+                marker_hit = has_automation_marker(cmdline_text)
+                env_hit = False
+                try:
+                    env = proc.environ()
+                    env_hit = bool(env and env.get(_AUTOMATION_MARKER_KEY) == "1")
+                except Exception:
+                    pass
+
+                if marker_hit or env_hit:
+                    candidates.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            except Exception:
+                continue
+
+        stats["candidates"] = len(candidates)
+        for proc in candidates:
+            try:
+                proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
+                stats["killed"] += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            except Exception:
+                continue
+
+        remaining = 0
+        for proc in psutil.process_iter(["name", "cmdline"]):
+            try:
+                name = (proc.info.get("name") or "").lower()
+                cmdline = proc.info.get("cmdline") or []
+                matched, _ = is_browser_related_process(name, cmdline)
+                if not matched:
+                    continue
+
+                cmdline_text = " ".join(cmdline).lower()
+                marker_hit = has_automation_marker(cmdline_text)
+                env_hit = False
+                try:
+                    env = proc.environ()
+                    env_hit = bool(env and env.get(_AUTOMATION_MARKER_KEY) == "1")
+                except Exception:
+                    pass
+
+                if marker_hit or env_hit:
+                    remaining += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            except Exception:
+                continue
+        stats["remaining"] = remaining
+    except Exception:
+        pass
+
+    return stats

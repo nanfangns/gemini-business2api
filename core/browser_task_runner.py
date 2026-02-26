@@ -16,6 +16,8 @@ import os
 import sys
 import traceback
 
+os.environ["GEMINI_AUTOMATION_MARKER"] = "1"
+
 # 确保项目根目录在 sys.path 中（从 core/ 目录往上一级）
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 _project_root = os.path.dirname(_script_dir)
