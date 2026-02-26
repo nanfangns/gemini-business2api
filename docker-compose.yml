@@ -13,6 +13,13 @@ services:
       - ./.env:/app/.env
     env_file:
       - .env
+    environment:
+      - TASK_PROCESS_HARD_RESTART=1
+      - TASK_PROCESS_HARD_RESTART_DELAY_MS=120
+      - TASK_PROCESS_RECYCLE_MODE=always
+      - TASK_PROCESS_RECYCLE_DELAY_MS=120
+      - TASK_PROCESS_RECYCLE_PREFIXES=REGISTER,REFRESH
+      - STRICT_AUTOMATION_CLEANUP=1
     restart: unless-stopped
     # 健康检查
     healthcheck:
