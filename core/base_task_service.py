@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import threading
 import time
 from collections import deque
@@ -22,87 +21,9 @@ from core.account import update_accounts_config
 
 logger = logging.getLogger("gemini.base_task")
 
-_PROCESS_RECYCLE_LOCK = threading.Lock()
-_PROCESS_RECYCLE_SCHEDULED = False
-
 
 class TaskCancelledError(Exception):
     """Raised to cooperatively stop task execution."""
-
-
-def _read_positive_int_env(name: str, default: int) -> int:
-    raw = os.getenv(name, str(default)).strip()
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return value if value > 0 else default
-
-
-def _read_env_text(name: str, default: str) -> str:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip()
-
-
-def _is_zeabur_runtime() -> bool:
-    # Zeabur 常见环境变量，命中任一即认为在 Zeabur 托管环境
-    probe_keys = (
-        "ZEABUR",
-        "ZEABUR_SERVICE_ID",
-        "ZEABUR_PROJECT_ID",
-        "ZEABUR_REGION",
-    )
-    return any((os.getenv(k) or "").strip() for k in probe_keys)
-
-
-def _get_current_rss_mb() -> float:
-    try:
-        import psutil
-
-        return psutil.Process().memory_info().rss / (1024 * 1024)
-    except Exception:
-        pass
-
-    # Linux fallback when psutil is unavailable.
-    try:
-        with open("/proc/self/status", "r", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith("VmRSS:"):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        return float(parts[1]) / 1024.0
-    except Exception:
-        pass
-
-    try:
-        with open("/proc/self/statm", "r", encoding="utf-8") as f:
-            parts = f.read().strip().split()
-        if len(parts) >= 2:
-            rss_pages = int(parts[1])
-            page_size = os.sysconf("SC_PAGE_SIZE")
-            return (rss_pages * page_size) / (1024 * 1024)
-    except Exception:
-        pass
-
-    return 0.0
-
-
-def _schedule_process_exit(delay_ms: int) -> bool:
-    global _PROCESS_RECYCLE_SCHEDULED
-    with _PROCESS_RECYCLE_LOCK:
-        if _PROCESS_RECYCLE_SCHEDULED:
-            return False
-        _PROCESS_RECYCLE_SCHEDULED = True
-
-    def _exit_later() -> None:
-        time.sleep(max(0.1, delay_ms / 1000))
-        # Exit the process so container/runtime supervisor recreates a clean process.
-        os._exit(0)
-
-    threading.Thread(target=_exit_later, daemon=True, name="task-process-recycle").start()
-    return True
 
 
 class TaskStatus(str, Enum):
@@ -185,33 +106,6 @@ class BaseTaskService(Generic[T]):
         self._max_completed_tasks = 10
         self._max_logs_per_task = 120
         self._max_results_per_task = 200
-
-        # Zeabur 上默认关闭“任务完成即重启进程”，避免会话中断和平台误判异常退出
-        zeabur = _is_zeabur_runtime()
-        default_recycle_mode = "rss_threshold" if not zeabur else "off"
-        default_hard_restart = "1" if not zeabur else "0"
-
-        self._process_recycle_mode = _read_env_text("TASK_PROCESS_RECYCLE_MODE", default_recycle_mode).lower()
-        self._process_recycle_rss_mb = _read_positive_int_env("TASK_PROCESS_RECYCLE_RSS_MB", 160)
-        self._process_recycle_delay_ms = _read_positive_int_env("TASK_PROCESS_RECYCLE_DELAY_MS", 800)
-        prefix_raw = _read_env_text("TASK_PROCESS_RECYCLE_PREFIXES", "REGISTER,REFRESH")
-        self._process_recycle_prefixes = {
-            token.strip().upper()
-            for token in prefix_raw.split(",")
-            if token.strip()
-        }
-        hard_restart_raw = _read_env_text("TASK_PROCESS_HARD_RESTART", default_hard_restart).lower()
-        self._process_hard_restart_enabled = hard_restart_raw not in ("", "0", "false", "no", "off", "disabled")
-        self._process_hard_restart_delay_ms = _read_positive_int_env("TASK_PROCESS_HARD_RESTART_DELAY_MS", 120)
-
-        logger.info(
-            "[%s] recycle_policy zeabur=%s hard_restart=%s recycle_mode=%s rss_threshold_mb=%d",
-            self._log_prefix,
-            zeabur,
-            self._process_hard_restart_enabled,
-            self._process_recycle_mode,
-            self._process_recycle_rss_mb,
-        )
 
     def get_task(self, task_id: str) -> Optional[T]:
         return self._tasks.get(task_id)
@@ -322,24 +216,7 @@ class BaseTaskService(Generic[T]):
             self._clear_cancel_hooks(task.id)
             self._compact_task_payload(task)
             self._cleanup_finished_tasks()
-            if self._process_hard_restart_enabled and (
-                not self._process_recycle_prefixes or self._log_prefix.upper() in self._process_recycle_prefixes
-            ):
-                await self._force_memory_release()
-                scheduled = _schedule_process_exit(self._process_hard_restart_delay_ms)
-                if scheduled:
-                    logger.warning(
-                        "[%s] hard process restart scheduled task_id=%s status=%s delay_ms=%d",
-                        self._log_prefix,
-                        task.id,
-                        task.status.value,
-                        self._process_hard_restart_delay_ms,
-                    )
-            elif self._process_recycle_mode in ("", "off", "disabled", "0", "false", "no"):
-                asyncio.create_task(self._force_memory_release())
-            else:
-                await self._force_memory_release()
-                await self._maybe_recycle_process(task)
+            asyncio.create_task(self._force_memory_release())
 
     def _add_cancel_hook(self, task_id: str, hook: Callable[[], None]) -> None:
         with self._cancel_hooks_lock:
@@ -474,51 +351,3 @@ class BaseTaskService(Generic[T]):
             logger.info("[%s] task history compacted and GC completed", self._log_prefix)
         except Exception as e:
             logger.debug("[%s] memory cleanup error: %s", self._log_prefix, e)
-
-    async def _maybe_recycle_process(self, task: T) -> None:
-        mode = self._process_recycle_mode
-        if mode in ("", "off", "disabled", "0", "false", "no"):
-            return
-
-        if self._process_recycle_prefixes and self._log_prefix.upper() not in self._process_recycle_prefixes:
-            return
-
-        rss_mb = _get_current_rss_mb()
-        should_recycle = False
-        reason = ""
-        if mode in ("always", "force"):
-            should_recycle = True
-            reason = "always"
-        elif mode in ("rss", "rss_threshold", "threshold"):
-            if rss_mb <= 0:
-                should_recycle = True
-                reason = "rss-unavailable-fallback"
-            else:
-                should_recycle = rss_mb >= self._process_recycle_rss_mb
-                reason = "rss-threshold"
-        else:
-            logger.warning("[%s] unknown TASK_PROCESS_RECYCLE_MODE=%s (skip)", self._log_prefix, mode)
-            return
-
-        if not should_recycle:
-            logger.info(
-                "[%s] process recycle skipped mode=%s rss_mb=%.1f threshold_mb=%d",
-                self._log_prefix,
-                mode,
-                rss_mb,
-                self._process_recycle_rss_mb,
-            )
-            return
-
-        scheduled = _schedule_process_exit(self._process_recycle_delay_ms)
-        if scheduled:
-            logger.warning(
-                "[%s] process recycle scheduled reason=%s task_id=%s status=%s rss_mb=%.1f threshold_mb=%d delay_ms=%d",
-                self._log_prefix,
-                reason,
-                task.id,
-                task.status.value,
-                rss_mb,
-                self._process_recycle_rss_mb,
-                self._process_recycle_delay_ms,
-            )
