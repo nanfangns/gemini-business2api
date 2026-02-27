@@ -185,17 +185,13 @@ class SessionBindingManager:
     """
     
     def __init__(self, persist_interval: int = 60):
-        # 文件模式下使用内存缓存；数据库模式下按 chat_id 逐条读写，不走会话内存缓存。
+        # 内存缓存：{chat_id: {"account_id": str, "created_at": float}}
         self._bindings: Dict[str, dict] = {}
         self._lock = asyncio.Lock()
-        self._dirty = False  # 仅文件模式使用
+        self._dirty = False  # 是否有未持久化的变更
         self._persist_interval = persist_interval
-        self._max_bindings = 10000  # 仅文件模式生效
+        self._max_bindings = 10000  # 最大绑定数量
         self._binding_ttl = 86400 * 7  # 绑定过期时间（7天）
-
-    @staticmethod
-    def _db_key(chat_id: str) -> str:
-        return f"session_binding:{chat_id}"
         
     async def get_binding(self, chat_id: str) -> Optional[dict]:
         """
@@ -209,22 +205,6 @@ class SessionBindingManager:
             }
             如果未绑定则返回 None
         """
-        from core import storage
-
-        if storage.is_database_enabled():
-            try:
-                binding = await storage.db_get(self._db_key(chat_id))
-            except Exception as e:
-                logger.error("[SESSION-BIND] 数据库读取绑定失败 chat_hash=%s err=%s", _hash_tag(chat_id), str(e)[:120])
-                return None
-            if not binding or not isinstance(binding, dict):
-                return None
-            if time.time() - float(binding.get("created_at", 0)) > self._binding_ttl:
-                # 过期即删除，避免长期占用
-                await self.remove_binding(chat_id)
-                return None
-            return binding
-
         async with self._lock:
             binding = self._bindings.get(chat_id)
             if not binding:
@@ -247,41 +227,26 @@ class SessionBindingManager:
             account_id: 账号ID
             session_id: Google会话ID (projects/.../locations/global/sessions/...)
         """
-        from core import storage
-
-        if storage.is_database_enabled():
-            old_binding = await self.get_binding(chat_id) or {}
+        async with self._lock:
+            # 保留旧的创建时间（如果是更新现有绑定）
+            old_binding = self._bindings.get(chat_id, {})
             created_at = old_binding.get("created_at", time.time())
+            
+            # 如果提供了新的 session_id，则更新，否则尝试保留旧的（如果账号没变）
             final_session_id = session_id
             if not final_session_id and old_binding.get("account_id") == account_id:
                 final_session_id = old_binding.get("session_id")
-            payload = {
+
+            self._bindings[chat_id] = {
                 "account_id": account_id,
                 "session_id": final_session_id,
-                "created_at": created_at,
+                "created_at": created_at
             }
-            await storage.db_set(self._db_key(chat_id), payload)
-        else:
-            async with self._lock:
-                # 保留旧的创建时间（如果是更新现有绑定）
-                old_binding = self._bindings.get(chat_id, {})
-                created_at = old_binding.get("created_at", time.time())
-                
-                # 如果提供了新的 session_id，则更新，否则尝试保留旧的（如果账号没变）
-                final_session_id = session_id
-                if not final_session_id and old_binding.get("account_id") == account_id:
-                    final_session_id = old_binding.get("session_id")
-
-                self._bindings[chat_id] = {
-                    "account_id": account_id,
-                    "session_id": final_session_id,
-                    "created_at": created_at
-                }
-                self._dirty = True
-                
-                # 检查缓存大小，LRU 清理
-                if len(self._bindings) > self._max_bindings:
-                    self._cleanup_oldest()
+            self._dirty = True
+            
+            # 检查缓存大小，LRU 清理
+            if len(self._bindings) > self._max_bindings:
+                self._cleanup_oldest()
         
         sess_tag = "set" if session_id else "none"
         logger.info(
@@ -298,20 +263,6 @@ class SessionBindingManager:
         Returns:
             是否成功解除（True=存在并已解除，False=不存在）
         """
-        from core import storage
-
-        if storage.is_database_enabled():
-            existed = await storage.db_get(self._db_key(chat_id))
-            if existed is not None:
-                # 无删除API，写入空对象作为 tombstone
-                await storage.db_set(self._db_key(chat_id), {})
-                logger.info(
-                    "[SESSION-BIND] event=binding_removed chat_hash=%s",
-                    _hash_tag(chat_id),
-                )
-                return True
-            return False
-
         async with self._lock:
             if chat_id in self._bindings:
                 del self._bindings[chat_id]
@@ -330,21 +281,6 @@ class SessionBindingManager:
         Returns:
             是否成功重置（True=存在并已重置，False=不存在）
         """
-        from core import storage
-
-        if storage.is_database_enabled():
-            binding = await self.get_binding(chat_id)
-            if binding:
-                binding["session_id"] = None
-                await storage.db_set(self._db_key(chat_id), binding)
-                logger.info(
-                    "[SESSION-BIND] event=session_binding_reset chat_hash=%s account_hash=%s",
-                    _hash_tag(chat_id),
-                    _hash_tag(str(binding.get('account_id', ''))),
-                )
-                return True
-            return False
-
         async with self._lock:
             if chat_id in self._bindings:
                 binding = self._bindings[chat_id]

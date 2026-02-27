@@ -1,4 +1,4 @@
-import json, time, os, asyncio, uuid, ssl, re, yaml, shutil, base64, sys
+import json, time, os, asyncio, uuid, ssl, re, yaml, shutil, base64
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Union, Dict, Any
 from pathlib import Path
@@ -129,28 +129,8 @@ def get_request_quota_type(model_name: Optional[str]) -> str:
 
 # ---------- 日志配置 ----------
 
-def _read_positive_int_env(name: str, default: int) -> int:
-    raw = os.getenv(name, str(default)).strip()
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return value if value > 0 else default
-
-
-def _read_bool_env(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in ("1", "true", "yes", "y", "on")
-
-
-# 低内存启动模式：默认开启（可通过 LOW_MEMORY_STARTUP=0 关闭）
-LOW_MEMORY_STARTUP = _read_bool_env("LOW_MEMORY_STARTUP", True)
-
-# 内存日志缓冲区（低内存模式默认更小，减少常驻）
-_log_buffer_default = 300 if LOW_MEMORY_STARTUP else 1000
-log_buffer = deque(maxlen=_read_positive_int_env("LOG_BUFFER_MAXLEN", _log_buffer_default))
+# 内存日志缓冲区 (保留最近 1000 条日志，重启后清空)
+log_buffer = deque(maxlen=1000)
 log_lock = Lock()
 
 # 统计数据持久化
@@ -197,51 +177,7 @@ async def load_stats():
     if isinstance(data.get("rate_limit_timestamps"), list):
         data["rate_limit_timestamps"] = deque(data["rate_limit_timestamps"], maxlen=10000)
 
-    # 低内存启动模式：仅保留必要计数，丢弃重对象历史，避免重启后常驻偏高
-    if LOW_MEMORY_STARTUP:
-        req_maxlen = _read_positive_int_env("STARTUP_REQUEST_TIMESTAMPS_MAXLEN", 2000)
-        fail_maxlen = _read_positive_int_env("STARTUP_FAILURE_TIMESTAMPS_MAXLEN", 500)
-        rate_maxlen = _read_positive_int_env("STARTUP_RATE_LIMIT_TIMESTAMPS_MAXLEN", 500)
-        conv_keep = _read_positive_int_env("STARTUP_RECENT_CONVERSATIONS_MAXLEN", 60)
-
-        data["request_timestamps"] = deque(list(data.get("request_timestamps", []))[-req_maxlen:], maxlen=req_maxlen)
-        data["failure_timestamps"] = deque(list(data.get("failure_timestamps", []))[-fail_maxlen:], maxlen=fail_maxlen)
-        data["rate_limit_timestamps"] = deque(list(data.get("rate_limit_timestamps", []))[-rate_maxlen:], maxlen=rate_maxlen)
-        data["model_request_timestamps"] = {}
-        data["visitor_ips"] = {}
-        data["account_conversations"] = {}
-        if isinstance(data.get("recent_conversations"), list):
-            data["recent_conversations"] = data["recent_conversations"][-conv_keep:]
-        else:
-            data["recent_conversations"] = []
-
     return data
-
-
-def _force_startup_memory_release() -> None:
-    """Best-effort startup memory trim, mainly for Linux containers."""
-    try:
-        import gc
-        gc.collect()
-    except Exception:
-        pass
-
-    if not sys.platform.startswith("linux"):
-        return
-
-    try:
-        import ctypes
-        import ctypes.util
-
-        libc_name = ctypes.util.find_library("c")
-        libc = ctypes.CDLL(libc_name) if libc_name else ctypes.CDLL("libc.so.6")
-        malloc_trim = getattr(libc, "malloc_trim", None)
-        if malloc_trim:
-            malloc_trim.argtypes = [ctypes.c_size_t]
-            malloc_trim.restype = ctypes.c_int
-            malloc_trim(0)
-    except Exception:
-        pass
 
 async def save_stats(stats):
     """保存统计数据（已优化：内部使用 storage 缓冲区，非阻塞）"""
@@ -943,7 +879,6 @@ async def startup_event():
     global_stats.setdefault("recent_conversations", [])
     uptime_tracker.configure_storage(os.path.join(DATA_DIR, "uptime.json"))
     uptime_tracker.load_heartbeats()
-    _force_startup_memory_release()
     logger.info(f"[SYSTEM] 统计数据已加载: {global_stats['total_requests']} 次请求, {global_stats['total_visitors']} 位访客")
 
     # 启动缓存清理任务
@@ -982,12 +917,13 @@ async def startup_event():
     else:
         logger.info("[SYSTEM] 自动登录刷新未启用或依赖不可用")
 
-    # 启动会话绑定管理器
-    # 数据库模式：按 chat_id 逐条读写绑定，避免大字典常驻内存
-    # 文件模式：沿用内存缓存
+    # 启动会话绑定管理器（从数据库加载绑定关系，启动持久化任务）
     try:
         binding_mgr = get_session_binding_manager()
-        logger.info("[SYSTEM] 会话绑定管理器已启动（DB逐条持久化 / 文件模式内存缓存）")
+        # [OPTIMIZE] 禁用会话绑定持久化，避免流浪模式产生的海量临时数据写入数据库
+        # await binding_mgr.load_from_db()
+        # asyncio.create_task(binding_mgr.start_persist_task())
+        logger.info("[SYSTEM] 会话绑定管理器已启动（内存模式，不持久化）")
     except Exception as e:
         logger.error(f"[SYSTEM] 启动会话绑定管理器失败: {e}")
 
@@ -2205,9 +2141,7 @@ async def chat_impl(
 
     bound_account_id = binding_info.get("account_id") if binding_info else None
     bound_session_id = binding_info.get("session_id") if binding_info else None
-    # MEMORY 模式不依赖内存会话缓存，使用数据库绑定中的 session_id
-    memory_session_id = bound_session_id if key_config.mode == ApiKeyMode.MEMORY else None
-
+    
     # 优化并发：FAST 模式跳过全局锁竞争
     if key_config.mode == ApiKeyMode.FAST:
         # Fast 模式：使用本地一次性锁，避免通过管理器获取全局锁
@@ -2219,7 +2153,7 @@ async def chat_impl(
 
     # 4. 在锁的保护下检查缓存和处理Session（保证同一对话的请求串行化）
     async with session_lock:
-        cached_session = None if key_config.mode == ApiKeyMode.MEMORY else multi_account_mgr.global_session_cache.get(session_cache_key)
+        cached_session = multi_account_mgr.global_session_cache.get(session_cache_key)
 
         if cached_session:
             # 使用已绑定的账户和缓存的 Session
@@ -2244,18 +2178,16 @@ async def chat_impl(
                     is_new_conversation = True
                     logger.info(f"[CHAT] [{bound_account_id}] [req_{request_id}] 绑定账号重建Session")
                 
-                # 非 MEMORY 模式才写入内存缓存
-                if key_config.mode != ApiKeyMode.MEMORY:
-                    await multi_account_mgr.set_session_cache(
-                        session_cache_key,
-                        account_manager.config.account_id,
-                        google_session
-                    )
+                # 更新缓存
+                await multi_account_mgr.set_session_cache(
+                    session_cache_key,
+                    account_manager.config.account_id,
+                    google_session
+                )
                 
-                # MEMORY 模式将 Session ID 持久化到数据库绑定
+                # 更新绑定（确保 Session ID 被持久化）
                 if key_config.mode == ApiKeyMode.MEMORY:
                     await binding_mgr.set_binding(chat_id_for_binding, account_manager.config.account_id, google_session)
-                    memory_session_id = google_session
                 
                 uptime_tracker.record_request("account_pool", True)
             except Exception as e:
@@ -2287,17 +2219,15 @@ async def chat_impl(
                     attempt_account = await multi_account_mgr.get_account(None, request_id, request_quota_type)
                     account_manager = attempt_account
                     google_session = await create_google_session(attempt_account, http_client, USER_AGENT, request_id)
-                    # 非 MEMORY 模式写入内存会话缓存
-                    if key_config.mode != ApiKeyMode.MEMORY:
-                        await multi_account_mgr.set_session_cache(
-                            session_cache_key,
-                            account_manager.config.account_id,
-                            google_session
-                        )
-                    # MEMORY 模式仅写数据库绑定（含 Session ID）
+                    # 线程安全地绑定账户到此对话
+                    await multi_account_mgr.set_session_cache(
+                        session_cache_key,
+                        account_manager.config.account_id,
+                        google_session
+                    )
+                    # 持久化绑定关系（含 Session ID）
                     if key_config.mode == ApiKeyMode.MEMORY:
                         await binding_mgr.set_binding(chat_id_for_binding, account_manager.config.account_id, google_session)
-                        memory_session_id = google_session
                     is_new_conversation = True
                     logger.info(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] 新会话创建并绑定账户")
                     # 记录账号池状态（账户可用）
@@ -2403,7 +2333,7 @@ async def chat_impl(
 
     # 封装生成器 (含图片上传和重试逻辑)
     async def response_wrapper():
-        nonlocal account_manager, memory_session_id  # 允许修改外层上下文
+        nonlocal account_manager  # 允许修改外层的 account_manager
 
         retry_count = 0
         max_retries = MAX_REQUEST_RETRIES  # 使用配置的最大重试次数
@@ -2461,16 +2391,12 @@ async def chat_impl(
                     # 创建新 Session
                     new_sess = await create_google_session(new_account, http_client, USER_AGENT, request_id)
 
-                    # 非 MEMORY 模式更新内存缓存绑定
-                    if key_config.mode != ApiKeyMode.MEMORY:
-                        await multi_account_mgr.set_session_cache(
-                            session_cache_key,
-                            new_account.config.account_id,
-                            new_sess
-                        )
-                    else:
-                        await binding_mgr.set_binding(chat_id_for_binding, new_account.config.account_id, new_sess)
-                        memory_session_id = new_sess
+                    # 更新缓存绑定
+                    await multi_account_mgr.set_session_cache(
+                        session_cache_key,
+                        new_account.config.account_id,
+                        new_sess
+                    )
 
                     # 更新当前上下文状态
                     account_manager = new_account
@@ -2506,31 +2432,20 @@ async def chat_impl(
             # ------------------------------------------------------------------
             try:
                 # A. Session 检查与恢复
-                if key_config.mode == ApiKeyMode.MEMORY:
-                    current_session = memory_session_id
-                    if not current_session:
-                        logger.warning(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] MEMORY绑定无Session，重建Session")
-                        new_sess = await create_google_session(account_manager, http_client, USER_AGENT, request_id)
-                        await binding_mgr.set_binding(chat_id_for_binding, account_manager.config.account_id, new_sess)
-                        memory_session_id = new_sess
-                        current_session = new_sess
-                        current_retry_mode = True
-                        current_file_ids = []
+                cached = multi_account_mgr.global_session_cache.get(session_cache_key)
+                if not cached:
+                    logger.warning(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] 缓存已清理，重建Session")
+                    new_sess = await create_google_session(account_manager, http_client, USER_AGENT, request_id)
+                    await multi_account_mgr.set_session_cache(
+                        session_cache_key,
+                        account_manager.config.account_id,
+                        new_sess
+                    )
+                    current_session = new_sess
+                    current_retry_mode = True
+                    current_file_ids = []
                 else:
-                    cached = multi_account_mgr.global_session_cache.get(session_cache_key)
-                    if not cached:
-                        logger.warning(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] 缓存已清理，重建Session")
-                        new_sess = await create_google_session(account_manager, http_client, USER_AGENT, request_id)
-                        await multi_account_mgr.set_session_cache(
-                            session_cache_key,
-                            account_manager.config.account_id,
-                            new_sess
-                        )
-                        current_session = new_sess
-                        current_retry_mode = True
-                        current_file_ids = []
-                    else:
-                        current_session = cached["session_id"]
+                    current_session = cached["session_id"]
 
                 # B. 图片上传 (如果有图片且未上传)
                 if current_images and not current_file_ids:
@@ -2596,20 +2511,6 @@ async def chat_impl(
                             request_quota_type
                         )
                         setattr(e, "_account_http_error_handled", True)
-
-                    # 429 立即清理会话，避免继续复用坏 session
-                    if status_code == 429:
-                        try:
-                            await multi_account_mgr.clear_session_cache(session_cache_key)
-                        except Exception:
-                            pass
-                        if key_config.mode == ApiKeyMode.MEMORY:
-                            try:
-                                await binding_mgr.remove_binding(chat_id_for_binding)
-                            except Exception:
-                                pass
-                            memory_session_id = None
-                        logger.warning(f"[CHAT] [req_{request_id}] 命中429，已立即清理会话与绑定")
                 else:
                     account_manager.handle_non_http_error("聊天请求", request_id)
 

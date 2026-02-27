@@ -58,8 +58,7 @@ class LoginService(BaseTaskService[LoginTask]):
             log_prefix="REFRESH",
         )
         self._is_polling = False
-        # 默认开启自动刷新，避免任务完成触发进程重启后处于暂停态
-        self._auto_refresh_paused = False
+        self._auto_refresh_paused = True
         self.register_service = register_service
 
     def _get_active_account_ids(self) -> set:
