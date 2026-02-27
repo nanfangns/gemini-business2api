@@ -1,17 +1,17 @@
-# Stage 1: 构建前端
+# syntax=docker/dockerfile:1.7
+
 FROM node:20-slim AS frontend-builder
 WORKDIR /app/frontend
 
-# 使用国内镜像加速 npm install
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm config set registry https://registry.npmmirror.com && \
-    npm install --silent
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm config set registry "${NPM_REGISTRY}" && \
+    npm ci --silent
 
-# 复制前端源码并构建
 COPY frontend/ ./
 RUN npm run build
 
-# Stage 2: 最终运行时镜像
 FROM python:3.11-slim-bookworm
 WORKDIR /app
 
@@ -19,42 +19,76 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai
 
-# 1. 核心系统依赖（最重且最稳定的部分，放在最前面以永久利用缓存）
-RUN apt-get update && \
+ARG DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
+ARG DEBIAN_SECURITY_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian-security
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG INSTALL_BROWSER_DEPS=1
+
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i \
+        -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+        -e "s|https://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+        -e "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+        -e "s|https://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+        -e "s|http://security.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+        -e "s|https://security.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+        /etc/apt/sources.list.d/debian.sources; \
+      rm -f /etc/apt/sources.list; \
+    else \
+      printf 'deb %s bookworm main\n' "${DEBIAN_MIRROR}" > /etc/apt/sources.list; \
+      printf 'deb %s bookworm-updates main\n' "${DEBIAN_MIRROR}" >> /etc/apt/sources.list; \
+      printf 'deb %s bookworm-security main\n' "${DEBIAN_SECURITY_MIRROR}" >> /etc/apt/sources.list; \
+    fi
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eux; \
+    apt-get update \
+      -o Acquire::Retries=3 \
+      -o Acquire::http::Timeout=30 \
+      -o Acquire::https::Timeout=30 \
+      -o Acquire::ForceIPv4=true; \
     apt-get install -y --no-install-recommends \
-    gcc \
-    curl \
-    tzdata \
-    chromium chromium-driver \
-    dbus dbus-x11 \
-    xvfb xauth \
-    libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
-    libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
-    libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 \
-    libcairo2 fonts-liberation fonts-noto-cjk && \
-    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
-    rm -rf /var/lib/apt/lists/*
+      -o Acquire::Retries=3 \
+      -o Acquire::http::Timeout=30 \
+      -o Acquire::https::Timeout=30 \
+      -o Acquire::ForceIPv4=true \
+      ca-certificates \
+      curl \
+      tzdata; \
+    if [ "${INSTALL_BROWSER_DEPS}" = "1" ]; then \
+      apt-get install -y --no-install-recommends \
+        -o Acquire::Retries=3 \
+        -o Acquire::http::Timeout=30 \
+        -o Acquire::https::Timeout=30 \
+        -o Acquire::ForceIPv4=true \
+        chromium \
+        dbus \
+        dbus-x11 \
+        xvfb \
+        xauth \
+        fonts-liberation \
+        fonts-noto-cjk; \
+    fi; \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime; \
+    echo $TZ > /etc/timezone
 
-# 2. Python 依赖安装（使用清华源加速）
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    set -eux; \
+    pip install -r requirements.txt --index-url "${PIP_INDEX_URL}"
 
-# 3. 后端代码复制（变动较频繁的部分）
 COPY core ./core
 COPY util ./util
 COPY main.py .
 
-# 4. 从 builder 阶段复制静态文件
 COPY --from=frontend-builder /app/static ./static
 
-# 5. 清理和准备启动
-RUN apt-get purge -y gcc && apt-get autoremove -y && rm -rf /tmp/* /var/tmp/* && \
-    mkdir -p ./data
+RUN mkdir -p ./data && rm -rf /tmp/* /var/tmp/*
 
 COPY entrypoint.sh .
 RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
-
-
 
 EXPOSE 7860
 
