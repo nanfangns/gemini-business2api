@@ -46,6 +46,17 @@ def _read_env_text(name: str, default: str) -> str:
     return value.strip()
 
 
+def _is_zeabur_runtime() -> bool:
+    # Zeabur 常见环境变量，命中任一即认为在 Zeabur 托管环境
+    probe_keys = (
+        "ZEABUR",
+        "ZEABUR_SERVICE_ID",
+        "ZEABUR_PROJECT_ID",
+        "ZEABUR_REGION",
+    )
+    return any((os.getenv(k) or "").strip() for k in probe_keys)
+
+
 def _get_current_rss_mb() -> float:
     try:
         import psutil
@@ -174,7 +185,13 @@ class BaseTaskService(Generic[T]):
         self._max_completed_tasks = 10
         self._max_logs_per_task = 120
         self._max_results_per_task = 200
-        self._process_recycle_mode = _read_env_text("TASK_PROCESS_RECYCLE_MODE", "rss_threshold").lower()
+
+        # Zeabur 上默认关闭“任务完成即重启进程”，避免会话中断和平台误判异常退出
+        zeabur = _is_zeabur_runtime()
+        default_recycle_mode = "rss_threshold" if not zeabur else "off"
+        default_hard_restart = "1" if not zeabur else "0"
+
+        self._process_recycle_mode = _read_env_text("TASK_PROCESS_RECYCLE_MODE", default_recycle_mode).lower()
         self._process_recycle_rss_mb = _read_positive_int_env("TASK_PROCESS_RECYCLE_RSS_MB", 160)
         self._process_recycle_delay_ms = _read_positive_int_env("TASK_PROCESS_RECYCLE_DELAY_MS", 800)
         prefix_raw = _read_env_text("TASK_PROCESS_RECYCLE_PREFIXES", "REGISTER,REFRESH")
@@ -183,9 +200,18 @@ class BaseTaskService(Generic[T]):
             for token in prefix_raw.split(",")
             if token.strip()
         }
-        hard_restart_raw = _read_env_text("TASK_PROCESS_HARD_RESTART", "1").lower()
+        hard_restart_raw = _read_env_text("TASK_PROCESS_HARD_RESTART", default_hard_restart).lower()
         self._process_hard_restart_enabled = hard_restart_raw not in ("", "0", "false", "no", "off", "disabled")
         self._process_hard_restart_delay_ms = _read_positive_int_env("TASK_PROCESS_HARD_RESTART_DELAY_MS", 120)
+
+        logger.info(
+            "[%s] recycle_policy zeabur=%s hard_restart=%s recycle_mode=%s rss_threshold_mb=%d",
+            self._log_prefix,
+            zeabur,
+            self._process_hard_restart_enabled,
+            self._process_recycle_mode,
+            self._process_recycle_rss_mb,
+        )
 
     def get_task(self, task_id: str) -> Optional[T]:
         return self._tasks.get(task_id)
