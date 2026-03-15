@@ -146,8 +146,8 @@ python main.py
 
 ### 访问方式
 
-- **管理面板**：`http://localhost:7860/`（使用 `ADMIN_KEY` 登录）
-- **API 接口**：`http://localhost:7860/v1/chat/completions`
+- **管理面板**：`http://localhost:8080/`（使用 `ADMIN_KEY` 登录）
+- **API 接口**：`http://localhost:8080/v1/chat/completions`
 
 ---
 
@@ -229,7 +229,7 @@ python scripts/migrate_to_database.py
 **调用示例：**
 
 ```bash
-curl http://localhost:7860/v1/chat/completions \
+curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer your-api-key" \
   -H "Content-Type: application/json" \
   -d '{

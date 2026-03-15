@@ -203,7 +203,7 @@
 ### 1. 图片文件
 
 ```bash
-curl -X POST http://localhost:7860/v1/v1/chat/completions \
+curl -X POST http://localhost:8080/v1/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_api_key" \
   -d '{
@@ -221,7 +221,7 @@ curl -X POST http://localhost:7860/v1/v1/chat/completions \
 ### 2. PDF 文档
 
 ```bash
-curl -X POST http://localhost:7860/v1/v1/chat/completions \
+curl -X POST http://localhost:8080/v1/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_api_key" \
   -d '{
@@ -240,7 +240,7 @@ curl -X POST http://localhost:7860/v1/v1/chat/completions \
 
 ```bash
 # Word 文档
-curl -X POST http://localhost:7860/v1/v1/chat/completions \
+curl -X POST http://localhost:8080/v1/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_api_key" \
   -d '{
@@ -255,7 +255,7 @@ curl -X POST http://localhost:7860/v1/v1/chat/completions \
   }'
 
 # Excel 表格
-curl -X POST http://localhost:7860/v1/v1/chat/completions \
+curl -X POST http://localhost:8080/v1/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_api_key" \
   -d '{
@@ -270,7 +270,7 @@ curl -X POST http://localhost:7860/v1/v1/chat/completions \
   }'
 
 # PowerPoint 演示文稿
-curl -X POST http://localhost:7860/v1/v1/chat/completions \
+curl -X POST http://localhost:8080/v1/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_api_key" \
   -d '{
@@ -288,7 +288,7 @@ curl -X POST http://localhost:7860/v1/v1/chat/completions \
 ### 4. 音频文件
 
 ```bash
-curl -X POST http://localhost:7860/v1/v1/chat/completions \
+curl -X POST http://localhost:8080/v1/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_api_key" \
   -d '{
@@ -306,7 +306,7 @@ curl -X POST http://localhost:7860/v1/v1/chat/completions \
 ### 5. 视频文件
 
 ```bash
-curl -X POST http://localhost:7860/v1/v1/chat/completions \
+curl -X POST http://localhost:8080/v1/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_api_key" \
   -d '{
@@ -324,7 +324,7 @@ curl -X POST http://localhost:7860/v1/v1/chat/completions \
 ### 6. 代码文件
 
 ```bash
-curl -X POST http://localhost:7860/v1/v1/chat/completions \
+curl -X POST http://localhost:8080/v1/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_api_key" \
   -d '{
@@ -342,7 +342,7 @@ curl -X POST http://localhost:7860/v1/v1/chat/completions \
 ### 7. 混合多种文件
 
 ```bash
-curl -X POST http://localhost:7860/v1/v1/chat/completions \
+curl -X POST http://localhost:8080/v1/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_api_key" \
   -d '{

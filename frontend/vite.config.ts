@@ -18,14 +18,14 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:7860',
+        target: 'http://localhost:8080',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
-      '/login': 'http://localhost:7860',
-      '/logout': 'http://localhost:7860',
-      '/admin': 'http://localhost:7860',
-      '/public': 'http://localhost:7860',
+      '/login': 'http://localhost:8080',
+      '/logout': 'http://localhost:8080',
+      '/admin': 'http://localhost:8080',
+      '/public': 'http://localhost:8080',
     },
   },
 })
