@@ -6,56 +6,32 @@
 
 @layer base {
   :root {
-    /* 春节科技风调色盘 */
-    --background: 20 33% 98%;
-    --foreground: 350 48% 14%;
+    --background: 0 0% 97%;
+    --foreground: 0 0% 10%;
 
     --card: 0 0% 100%;
-    --card-foreground: 350 48% 14%;
+    --card-foreground: 0 0% 10%;
 
-    --primary: 355 86% 54%;
-    /* 新春主色：瑞彩红 */
-    --primary-foreground: 43 100% 96%;
+    --primary: 0 0% 10%;
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 24 62% 95%;
-    --secondary-foreground: 350 48% 14%;
+    --secondary: 0 0% 92%;
+    --secondary-foreground: 0 0% 10%;
 
-    --muted: 24 45% 95%;
-    --muted-foreground: 8 22% 42%;
+    --muted: 0 0% 92%;
+    --muted-foreground: 0 0% 40%;
 
-    --accent: 42 96% 53%;
-    /* 点缀色：鎏金 */
-    --accent-foreground: 12 38% 18%;
+    --accent: 0 0% 90%;
+    --accent-foreground: 0 0% 10%;
 
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 0 70% 45%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 20 42% 88%;
-    --input: 20 42% 88%;
-    --ring: 355 86% 54%;
+    --border: 0 0% 86%;
+    --input: 0 0% 86%;
+    --ring: 0 0% 10%;
 
-    --radius: 0.6rem;
-    --shadow-sm: 0 1px 2px 0 rgb(101 18 18 / 0.08);
-    --shadow-paper: 0 12px 32px -18px rgb(153 27 27 / 0.24), 0 8px 14px -12px rgb(251 191 36 / 0.36);
-
-    /* iOS18 风格动效/层级 */
-    --motion-fast: 160ms;
-    --motion-medium: 240ms;
-    --motion-slow: 320ms;
-    --ease-ios: cubic-bezier(0.22, 1, 0.36, 1);
-
-    --glass-bg: hsla(0, 0%, 100%, 0.62);
-    --glass-bg-strong: hsla(0, 0%, 100%, 0.78);
-    --glass-border: hsla(355, 86%, 54%, 0.16);
-
-    --shadow-card: 0 12px 30px -22px rgba(153, 27, 27, 0.32), 0 8px 18px -18px rgba(245, 158, 11, 0.36);
-    --shadow-float: 0 24px 56px -28px rgba(153, 27, 27, 0.44), 0 14px 30px -24px rgba(245, 158, 11, 0.4);
-
-    --chart-primary: hsl(var(--primary));
-    --chart-accent: hsl(var(--accent));
-    --chart-danger: #f43f5e;
-    --chart-grid: rgba(148, 103, 103, 0.18);
-    --chart-label: rgba(103, 72, 72, 0.72);
+    --radius: 1rem;
   }
 }
 
@@ -63,7 +39,6 @@
   * {
     @apply border-border;
   }
-
   body {
     @apply bg-background text-foreground;
     font-family: "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
@@ -72,11 +47,20 @@
     margin: 0;
     padding: 0;
     overflow-x: hidden;
-    background:
-      radial-gradient(circle at 12% 16%, rgba(255, 113, 86, 0.18) 0%, transparent 42%),
-      radial-gradient(circle at 88% 14%, rgba(251, 191, 36, 0.18) 0%, transparent 36%),
-      linear-gradient(120deg, rgba(127, 29, 29, 0.05) 0%, rgba(255, 255, 255, 0.72) 45%, rgba(251, 191, 36, 0.07) 100%);
-    background-color: hsl(var(--background));
+    background-image:
+      radial-gradient(900px circle at 10% -20%, rgba(0, 0, 0, 0.04), transparent 45%),
+      radial-gradient(700px circle at 90% 0%, rgba(0, 0, 0, 0.05), transparent 40%),
+      linear-gradient(180deg, hsl(var(--background)) 0%, hsl(var(--background)) 100%);
+  }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background-image: linear-gradient(120deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0));
+    opacity: 0.5;
+    pointer-events: none;
+    z-index: -1;
   }
 
   h1,
@@ -88,7 +72,6 @@
 
   #app {
     min-height: 100vh;
-    position: relative;
   }
 }
 
@@ -152,51 +135,10 @@ html {
 }
 
 .monitor-card {
-  border-radius: var(--radius);
+  border-radius: 16px;
   padding: 0;
   background: hsl(var(--card));
-  box-shadow: var(--shadow-paper);
-}
-
-/* 顶部加载条 */
-.loading-bar-container {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  z-index: 1000;
-  pointer-events: none;
-  background: transparent;
-}
-
-.loading-bar {
-  height: 100%;
-  width: 0%;
-  background: linear-gradient(90deg, hsl(var(--primary)) 0%, hsl(var(--accent)) 55%, hsl(var(--primary)) 100%);
-  box-shadow: 0 0 16px hsla(var(--primary), 0.45), 0 0 28px hsla(var(--accent), 0.35);
-  transition: width 0.3s ease;
-}
-
-.loading-bar.active {
-  animation: loading-bar-move 2s infinite ease-in-out;
-}
-
-@keyframes loading-bar-move {
-  0% {
-    width: 0%;
-    left: 0;
-  }
-
-  50% {
-    width: 70%;
-    left: 15%;
-  }
-
-  100% {
-    width: 100%;
-    left: 0;
-  }
+  box-shadow: none;
 }
 
 .monitor-card__header {
@@ -354,26 +296,21 @@ html {
   0% {
     transform: translateY(0);
   }
-
   25% {
     transform: translateY(6px);
   }
-
   50% {
     transform: translateY(0);
   }
-
   75% {
     transform: translateY(-6px);
   }
-
   100% {
     transform: translateY(0);
   }
 }
 
 @keyframes logo-blink {
-
   0%,
   45%,
   55%,
@@ -381,64 +318,25 @@ html {
     transform: scaleY(1);
     opacity: 1;
   }
-
   50% {
     transform: scaleY(0.1);
     opacity: 0.6;
   }
 }
 
-/* iOS18 统一交互基线 */
-.ios-glass {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  box-shadow: var(--shadow-card);
+.logo-mark .logo-cat-wrapper {
+  animation: logo-float 4s ease-in-out infinite;
+  transform-origin: center;
 }
 
-.ios-glass-strong {
-  background: var(--glass-bg-strong);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(22px);
-  -webkit-backdrop-filter: blur(22px);
-  box-shadow: var(--shadow-float);
-}
-
-.ios-motion {
-  transition-property: color, background-color, border-color, box-shadow, transform, opacity;
-  transition-duration: var(--motion-medium);
-  transition-timing-function: var(--ease-ios);
-}
-
-.ios-motion-fast {
-  transition-duration: var(--motion-fast);
-}
-
-.ios-pressable {
-  transition: transform var(--motion-fast) var(--ease-ios), box-shadow var(--motion-medium) var(--ease-ios),
-    border-color var(--motion-medium) var(--ease-ios), background-color var(--motion-medium) var(--ease-ios);
-}
-
-.ios-pressable:hover {
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-card);
-}
-
-.ios-pressable:active {
-  transform: translateY(0) scale(0.98);
-}
-
-.ios-focus-ring:focus-visible {
-  outline: 2px solid hsla(var(--primary), 0.3);
-  outline-offset: 2px;
-}
-
-/* Logo Mark Styles */
 .logo-mark {
-  transition: transform 0.3s ease;
+  transform: translateY(2px);
 }
 
-.logo-mark:hover {
-  transform: scale(1.05);
+.logo-mark .logo-eye {
+  fill: #00bcd4;
+  filter: drop-shadow(0 0 2px #00bcd4);
+  animation: logo-blink 5s infinite;
+  transform-box: fill-box;
+  transform-origin: center;
 }

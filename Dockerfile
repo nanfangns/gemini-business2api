@@ -1,95 +1,68 @@
-# syntax=docker/dockerfile:1.7
-
+# Stage 1: 构建前端
 FROM node:20-slim AS frontend-builder
 WORKDIR /app/frontend
 
-ARG NPM_REGISTRY=https://registry.npmmirror.com
+# 先复制 package 文件利用 Docker 缓存
 COPY frontend/package.json frontend/package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    npm config set registry "${NPM_REGISTRY}" && \
-    npm ci --silent
+RUN npm install --silent
 
+# 复制前端源码并构建
 COPY frontend/ ./
 RUN npm run build
 
-FROM python:3.11-slim-bookworm
+# Stage 2: 最终运行时镜像
+FROM python:3.11-slim
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai
 
-ARG DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
-ARG DEBIAN_SECURITY_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian-security
-ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-ARG INSTALL_BROWSER_DEPS=1
-
-RUN set -eux; \
-    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-      sed -i \
-        -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
-        -e "s|https://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
-        -e "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
-        -e "s|https://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
-        -e "s|http://security.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
-        -e "s|https://security.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
-        /etc/apt/sources.list.d/debian.sources; \
-      rm -f /etc/apt/sources.list; \
-    else \
-      printf 'deb %s bookworm main\n' "${DEBIAN_MIRROR}" > /etc/apt/sources.list; \
-      printf 'deb %s bookworm-updates main\n' "${DEBIAN_MIRROR}" >> /etc/apt/sources.list; \
-      printf 'deb %s bookworm-security main\n' "${DEBIAN_SECURITY_MIRROR}" >> /etc/apt/sources.list; \
-    fi
-
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    set -eux; \
-    apt-get update \
-      -o Acquire::Retries=3 \
-      -o Acquire::http::Timeout=30 \
-      -o Acquire::https::Timeout=30 \
-      -o Acquire::ForceIPv4=true; \
-    apt-get install -y --no-install-recommends \
-      -o Acquire::Retries=3 \
-      -o Acquire::http::Timeout=30 \
-      -o Acquire::https::Timeout=30 \
-      -o Acquire::ForceIPv4=true \
-      ca-certificates \
-      curl \
-      tzdata; \
-    if [ "${INSTALL_BROWSER_DEPS}" = "1" ]; then \
-      apt-get install -y --no-install-recommends \
-        -o Acquire::Retries=3 \
-        -o Acquire::http::Timeout=30 \
-        -o Acquire::https::Timeout=30 \
-        -o Acquire::ForceIPv4=true \
-        chromium \
-        dbus \
-        dbus-x11 \
-        xvfb \
-        xauth \
-        fonts-liberation \
-        fonts-noto-cjk; \
-    fi; \
-    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime; \
-    echo $TZ > /etc/timezone
-
+# 安装 Python 依赖和浏览器依赖（合并为单一 RUN 指令以减少层数）
 COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    set -eux; \
-    pip install -r requirements.txt --index-url "${PIP_INDEX_URL}"
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        gcc \
+        curl \
+        tzdata \
+        chromium chromium-driver \
+        dbus dbus-x11 \
+        xvfb xauth \
+        libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+        libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+        libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 \
+        libcairo2 fonts-liberation fonts-noto-cjk && \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
+    pip install --no-cache-dir -r requirements.txt && \
+    apt-get purge -y gcc && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
+# 复制后端代码
+COPY main.py .
 COPY core ./core
 COPY util ./util
-COPY main.py .
+COPY scripts ./scripts
 
+# 从 builder 阶段只复制构建好的静态文件
 COPY --from=frontend-builder /app/static ./static
 
-RUN mkdir -p ./data && rm -rf /tmp/* /var/tmp/*
+# 创建数据目录
+RUN mkdir -p ./data
 
+# 复制启动脚本
 COPY entrypoint.sh .
-RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
+RUN chmod +x entrypoint.sh
 
+# 声明数据卷
+VOLUME ["/app/data"]
+
+# 声明端口
 EXPOSE 7860
 
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:7860/health || exit 1
+
+# 启动服务
 CMD ["./entrypoint.sh"]

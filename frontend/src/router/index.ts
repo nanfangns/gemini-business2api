@@ -57,6 +57,11 @@ const router = createRouter({
           name: 'docs',
           component: () => import('@/views/Docs.vue'),
         },
+        {
+          path: 'gallery',
+          name: 'gallery',
+          component: () => import('@/views/Gallery.vue'),
+        },
       ],
     },
   ],
@@ -68,11 +73,9 @@ router.beforeEach(async (to) => {
 
   // 需要认证的路由
   if (to.meta.requiresAuth) {
-    if (!authStore.isLoggedIn) {
-      const isAuthenticated = await authStore.checkAuth()
-      if (!isAuthenticated) {
-        return { name: 'login' }
-      }
+    const isAuthenticated = await authStore.checkAuth()
+    if (!isAuthenticated) {
+      return { name: 'login' }
     }
   }
 

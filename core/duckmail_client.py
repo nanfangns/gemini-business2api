@@ -3,13 +3,11 @@ import random
 import string
 import time
 from typing import Optional
-from urllib.parse import urlparse
 
 import requests
-from requests import Response
 
 from core.mail_utils import extract_verification_code
-from core.proxy_utils import no_proxy_matches, request_with_proxy_fallback
+from core.proxy_utils import request_with_proxy_fallback
 
 
 class DuckMailClient:
@@ -19,17 +17,13 @@ class DuckMailClient:
         self,
         base_url: str = "https://api.duckmail.sbs",
         proxy: str = "",
-        no_proxy: str = "",
-        direct_fallback: bool = False,
         verify_ssl: bool = True,
         api_key: str = "",
         log_callback=None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.verify_ssl = verify_ssl
-        self.proxy_url = (proxy or "").strip()
-        self.no_proxy = no_proxy or ""
-        self.direct_fallback = bool(direct_fallback)
+        self.proxies = {"http": proxy, "https": proxy} if proxy else None
         self.api_key = api_key.strip()
         self.log_callback = log_callback
 
@@ -42,24 +36,6 @@ class DuckMailClient:
         self.email = email
         self.password = password
 
-    def _build_proxies(self, url: str) -> Optional[dict]:
-        if not self.proxy_url:
-            return None
-        host = (urlparse(url).hostname or "").lower()
-        if host and no_proxy_matches(host, self.no_proxy):
-            return None
-        return {"http": self.proxy_url, "https": self.proxy_url}
-
-    def _request_once(self, method: str, url: str, proxies: Optional[dict], **kwargs) -> Response:
-        return requests.request(
-            method,
-            url,
-            proxies=proxies,
-            verify=self.verify_ssl,
-            timeout=kwargs.pop("timeout", 15),
-            **kwargs,
-        )
-
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
         """发送请求并打印详细日志"""
         headers = kwargs.pop("headers", None) or {}
@@ -70,13 +46,12 @@ class DuckMailClient:
         if "json" in kwargs:
             self._log("info", f"📦 请求体: {kwargs['json']}")
 
-        proxies = self._build_proxies(url)
         try:
             res = request_with_proxy_fallback(
                 requests.request,
                 method,
                 url,
-                proxies=proxies,
+                proxies=self.proxies,
                 verify=self.verify_ssl,
                 timeout=kwargs.pop("timeout", 15),
                 **kwargs,
@@ -90,15 +65,6 @@ class DuckMailClient:
                     pass
             return res
         except Exception as e:
-            if proxies and self.direct_fallback:
-                self._log("warning", f"⚠️ 代理请求失败，尝试直连重试一次: {type(e).__name__}")
-                try:
-                    res = self._request_once(method, url, None, **kwargs)
-                    self._log("info", f"📥 收到响应(直连): HTTP {res.status_code}")
-                    return res
-                except Exception as direct_exc:
-                    self._log("error", f"❌ 直连重试失败: {type(direct_exc).__name__}: {direct_exc}")
-                    raise
             self._log("error", f"❌ 网络请求失败: {e}")
             raise
 
@@ -200,6 +166,42 @@ class DuckMailClient:
 
             self._log("info", f"📨 收到 {len(messages)} 封邮件，开始检查验证码...")
 
+            from datetime import datetime
+            import re
+
+            def _parse_message_time(msg_obj) -> Optional[datetime]:
+                created_at = msg_obj.get("createdAt")
+                if created_at is None:
+                    return None
+
+                if isinstance(created_at, (int, float)):
+                    timestamp = float(created_at)
+                    if timestamp > 1e12:
+                        timestamp = timestamp / 1000.0
+                    return datetime.fromtimestamp(timestamp).astimezone().replace(tzinfo=None)
+
+                if isinstance(created_at, str):
+                    raw = created_at.strip()
+                    if not raw:
+                        return None
+                    if raw.isdigit():
+                        timestamp = float(raw)
+                        if timestamp > 1e12:
+                            timestamp = timestamp / 1000.0
+                        return datetime.fromtimestamp(timestamp).astimezone().replace(tzinfo=None)
+
+                    # 截断纳秒到微秒（fromisoformat 只支持6位小数）
+                    raw = re.sub(r"(\.\d{6})\d+", r"\1", raw)
+                    return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+
+                return None
+
+            # 按时间倒序，优先检查最新邮件
+            messages_with_time = [(msg, _parse_message_time(msg)) for msg in messages]
+            if any(item[1] is not None for item in messages_with_time):
+                messages_with_time.sort(key=lambda item: item[1] or datetime.min, reverse=True)
+                messages = [item[0] for item in messages_with_time]
+
             # 遍历邮件，过滤时间
             for idx, msg in enumerate(messages, 1):
                 msg_id = msg.get("id")
@@ -208,17 +210,9 @@ class DuckMailClient:
 
                 # 时间过滤
                 if since_time:
-                    created_at = msg.get("createdAt")
-                    if created_at:
-                        from datetime import datetime
-                        import re
-                        # 截断纳秒到微秒（fromisoformat 只支持6位小数）
-                        created_at = re.sub(r'(\.\d{6})\d+', r'\1', created_at)
-                        # 转换 UTC 时间到本地时区
-                        msg_time = datetime.fromisoformat(created_at.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
-                        if msg_time < since_time:
-                            self._log("info", f"⏭️ 邮件 {idx} 时间过早，跳过")
-                            continue
+                    msg_time = _parse_message_time(msg)
+                    if msg_time and msg_time < since_time:
+                        continue
 
                 self._log("info", f"🔍 正在读取邮件 {idx}/{len(messages)} (ID: {msg_id[:10]}...)")
                 detail = self._request(
@@ -272,7 +266,7 @@ class DuckMailClient:
                 self._log("error", "❌ 登录失败，无法轮询验证码")
                 return None
 
-        max_retries = timeout // interval
+        max_retries = max(1, timeout // interval)
         self._log("info", f"⏱️ 开始轮询验证码 (超时 {timeout}秒, 间隔 {interval}秒, 最多 {max_retries} 次)")
 
         for i in range(1, max_retries + 1):

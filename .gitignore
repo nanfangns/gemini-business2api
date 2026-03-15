@@ -10,7 +10,6 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
 lib64/
 parts/
 sdist/
@@ -20,6 +19,9 @@ wheels/
 .installed.cfg
 *.egg
 
+# Python lib directory (but not frontend/src/lib)
+/lib/
+
 # Virtual Environment
 venv/
 env/
@@ -28,7 +30,6 @@ ENV/
 # IDE
 .vscode/
 .idea/
-.claude/
 *.swp
 *.swo
 *~
@@ -36,13 +37,11 @@ ENV/
 # Project specific
 .env
 *.log
-*.log.csv
 
 # Generated files
 data/
 logs/
 static/
-helloagents/
 
 # OS
 .DS_Store

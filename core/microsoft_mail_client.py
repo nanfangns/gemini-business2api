@@ -4,12 +4,13 @@ from datetime import datetime, timedelta
 from email import message_from_bytes
 from email.utils import parsedate_to_datetime
 from typing import Optional
-from urllib.parse import urlparse
 
 import requests
 
 from core.mail_utils import extract_verification_code
-from core.outbound_proxy import no_proxy_matches
+
+# 常量定义
+CANCELLATION_CHECK_INTERVAL_SECONDS = 5  # 取消检查间隔（秒）
 
 
 class MicrosoftMailClient:
@@ -19,16 +20,12 @@ class MicrosoftMailClient:
         refresh_token: str,
         tenant: str = "consumers",
         proxy: str = "",
-        no_proxy: str = "",
-        direct_fallback: bool = False,
         log_callback=None,
     ) -> None:
         self.client_id = client_id
         self.refresh_token = refresh_token
         self.tenant = tenant or "consumers"
-        self.proxy_url = (proxy or "").strip()
-        self.no_proxy = no_proxy or ""
-        self.direct_fallback = bool(direct_fallback)
+        self.proxies = {"http": proxy, "https": proxy} if proxy else None
         self.log_callback = log_callback
         self.email: Optional[str] = None
 
@@ -44,16 +41,7 @@ class MicrosoftMailClient:
         }
         try:
             self._log("info", f"🔑 正在获取 Microsoft OAuth 令牌...")
-            proxies = None
-            if self.proxy_url:
-                host = (urlparse(url).hostname or "").lower()
-                if not (host and no_proxy_matches(host, self.no_proxy)):
-                    proxies = {"http": self.proxy_url, "https": self.proxy_url}
-
-            res = requests.post(url, data=data, proxies=proxies, timeout=15)
-            if res.status_code == 407 and proxies and self.direct_fallback:
-                self._log("warning", "⚠️ 代理认证失败(407)，尝试直连重试一次")
-                res = requests.post(url, data=data, proxies=None, timeout=15)
+            res = requests.post(url, data=data, proxies=self.proxies, timeout=15)
             if res.status_code != 200:
                 self._log("error", f"❌ Microsoft 令牌获取失败: HTTP {res.status_code}")
                 return None
@@ -65,16 +53,6 @@ class MicrosoftMailClient:
             self._log("info", "✅ Microsoft OAuth 令牌获取成功")
             return token
         except Exception as exc:
-            if self.proxy_url and self.direct_fallback:
-                self._log("warning", f"⚠️ 代理请求异常，尝试直连重试一次: {type(exc).__name__}")
-                try:
-                    res = requests.post(url, data=data, proxies=None, timeout=15)
-                    if res.status_code != 200:
-                        return None
-                    payload = res.json() if res.content else {}
-                    return payload.get("access_token")
-                except Exception:
-                    pass
             self._log("error", f"❌ Microsoft 令牌获取异常: {exc}")
             return None
 
@@ -180,13 +158,22 @@ class MicrosoftMailClient:
         self._log("info", f"⏱️ 开始轮询验证码 (超时 {timeout}秒, 间隔 {interval}秒, 最多 {max_retries} 次)")
 
         for i in range(1, max_retries + 1):
+            # 检查任务是否被取消（通过 log 触发 TaskCancelledError）
             self._log("info", f"🔄 第 {i}/{max_retries} 次轮询...")
             code = self.fetch_verification_code(since_time=since_time)
             if code:
                 self._log("info", f"🎉 验证码获取成功: {code}")
                 return code
             if i < max_retries:
-                time.sleep(interval)
+                # 分段 sleep，每5秒检查一次取消状态
+                for _ in range(interval // CANCELLATION_CHECK_INTERVAL_SECONDS):
+                    time.sleep(CANCELLATION_CHECK_INTERVAL_SECONDS)
+                    # 通过 log 检查取消状态（使用有意义的日志）
+                    self._log("debug", f"等待验证码中... ({(_ + 1) * CANCELLATION_CHECK_INTERVAL_SECONDS}/{interval}秒)")
+                # 处理剩余的秒数
+                remaining = interval % CANCELLATION_CHECK_INTERVAL_SECONDS
+                if remaining > 0:
+                    time.sleep(remaining)
 
         self._log("error", "❌ 验证码获取超时")
         return None
@@ -228,5 +215,7 @@ class MicrosoftMailClient:
         if self.log_callback:
             try:
                 self.log_callback(level, message)
+            except TaskCancelledError:
+                raise
             except Exception:
                 pass

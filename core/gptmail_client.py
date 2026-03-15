@@ -4,7 +4,9 @@ import string
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
 import requests
+
 from core.mail_utils import extract_verification_code
 from core.proxy_utils import request_with_proxy_fallback
 
@@ -112,6 +114,7 @@ class GPTMailClient:
     def register_account(self, domain: Optional[str] = None) -> bool:
         """生成一个新的邮箱地址并视为注册成功。"""
         return bool(self.generate_email(domain=domain))
+
     def _list_emails(self, email: str) -> List[Dict[str, Any]]:
         url = f"{self.base_url}/api/emails"
         res = self._request("GET", url, params={"email": email})

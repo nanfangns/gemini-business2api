@@ -27,73 +27,16 @@
             <div class="rounded-2xl border border-border bg-card p-4">
               <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">基础</p>
               <div class="mt-4 space-y-3">
-                <div class="space-y-4">
-                  <div class="flex items-center justify-between">
-                    <label class="text-xs font-medium text-muted-foreground/70 uppercase tracking-wider">密钥管理</label>
-                    <button 
-                      @click="addApiKey"
-                      class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-all active:scale-95"
-                    >
-                      <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                      添加密钥
-                    </button>
-                  </div>
-                  
-                  <div class="space-y-4">
-                    <div
-                      v-for="(item, index) in localSettings.basic.api_keys"
-                      :key="index"
-                      class="group relative flex flex-col gap-4 rounded-[10px] border border-border/80 bg-card p-4 transition-all hover:border-foreground/20 hover:shadow-sm"
-                    >
-                      <!-- Header: Label & Delete (Split Desktop view for better Vercel look) -->
-                      <div class="flex items-center justify-between">
-                        <div class="flex items-center gap-2">
-                          <!-- Mode Tag (Memory/Fast) -->
-                          <div 
-                            @click="item.mode = (item.mode === 'fast' ? 'memory' : 'fast')"
-                            class="cursor-pointer select-none rounded-[6px] px-2 py-0.5 text-[10px] font-bold uppercase tracking-tight transition-colors"
-                            :class="item.mode === 'fast'
-                              ? 'bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400 border border-emerald-500/20'
-                              : 'bg-primary/10 text-primary dark:bg-primary/20 dark:text-primary border border-primary/20'"
-                          >
-                            {{ item.mode === 'fast' ? 'Fast' : 'Memory' }}
-                          </div>
-                          
-                          <!-- Remark Badge -->
-                          <input
-                            v-model="item.remark"
-                            type="text"
-                            class="bg-transparent text-[10px] font-medium text-muted-foreground/60 placeholder:text-muted-foreground/30 focus:outline-none focus:text-muted-foreground w-20"
-                            placeholder="未命名备注"
-                          />
-                        </div>
-
-                        <button
-                          @click="removeApiKey(index)"
-                          class="h-6 w-6 flex items-center justify-center rounded-md border border-transparent text-muted-foreground/40 hover:text-destructive hover:bg-destructive/5 hover:border-destructive/10 transition-all opacity-0 group-hover:opacity-100"
-                        >
-                          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                        </button>
-                      </div>
-
-                      <!-- Key Input: Large, Monospace -->
-                      <div class="relative">
-                        <input
-                          v-model="item.key"
-                          type="text"
-                          class="w-full bg-transparent text-sm font-mono tracking-tight text-foreground/90 placeholder:text-muted-foreground/20 focus:outline-none"
-                          placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx"
-                          spellcheck="false"
-                        />
-                        <div class="absolute -bottom-1 left-0 h-[1px] w-0 bg-primary/20 transition-all group-focus-within:w-full"></div>
-                      </div>
-                    </div>
-
-                    <div v-if="!localSettings.basic.api_keys?.length" class="text-center py-10 rounded-[10px] border border-dashed border-border/50">
-                      <p class="text-[11px] font-medium text-muted-foreground/40 italic">空空如也，点击右上角开始</p>
-                    </div>
-                  </div>
+                <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <label class="block">API 密钥</label>
+                  <HelpTip text="支持多个密钥，用逗号分隔。例如: key1,key2,key3" />
                 </div>
+                <input
+                  v-model="localSettings.basic.api_key"
+                  type="text"
+                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="可选，多个密钥用逗号分隔"
+                />
                 <label class="block text-xs text-muted-foreground">基础地址</label>
                 <input
                   v-model="localSettings.basic.base_url"
@@ -121,41 +64,50 @@
                   class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
                   placeholder="http://127.0.0.1:7890 | no_proxy=localhost,127.0.0.1"
                 />
-                <div class="rounded-2xl border border-border/60 bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground">
-                  <p class="mb-2 font-medium">格式示例：</p>
-                  <div class="space-y-1.5">
-                    <div>
-                      <p class="text-[10px] text-muted-foreground/70 mb-0.5">基础格式：</p>
-                      <p class="font-mono text-[11px] leading-relaxed">http://127.0.0.1:7890</p>
-                    </div>
-                    <div>
-                      <p class="text-[10px] text-muted-foreground/70 mb-0.5">带认证：</p>
-                      <p class="font-mono text-[11px] leading-relaxed">http://user:pass@127.0.0.1:7890</p>
-                    </div>
-                    <div>
-                      <p class="text-[10px] text-muted-foreground/70 mb-0.5">SOCKS5 + NO_PROXY：</p>
-                      <p class="font-mono text-[11px] leading-relaxed break-all">socks5h://127.0.0.1:7890 | no_proxy=localhost,127.0.0.1,.local</p>
-                    </div>
-                    <div>
-                      <p class="text-[10px] text-muted-foreground/70 mb-0.5">完整示例：</p>
-                      <p class="font-mono text-[11px] leading-relaxed break-all">socks5h://user:pass@127.0.0.1:7890 | no_proxy=localhost,127.0.0.1,.local</p>
-                    </div>
-                  </div>
-                </div>
               </div>
             </div>
 
             <div class="rounded-2xl border border-border bg-card p-4">
+              <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">重试</p>
+              <div class="mt-4 grid grid-cols-2 gap-3 text-sm">
+                <label class="col-span-2 text-xs text-muted-foreground">账户切换次数</label>
+                <input v-model.number="localSettings.retry.max_account_switch_tries" type="number" min="1" class="col-span-2 rounded-2xl border border-input bg-background px-3 py-2" />
+
+                <label class="col-span-2 text-xs text-muted-foreground">对话冷却（小时）</label>
+                <input v-model.number="textRateLimitCooldownHours" type="number" min="1" max="24" step="1" class="col-span-2 rounded-2xl border border-input bg-background px-3 py-2" />
+
+                <label class="col-span-2 text-xs text-muted-foreground">绘图冷却（小时）</label>
+                <input v-model.number="imagesRateLimitCooldownHours" type="number" min="1" max="24" step="1" class="col-span-2 rounded-2xl border border-input bg-background px-3 py-2" />
+
+                <label class="col-span-2 text-xs text-muted-foreground">视频冷却（小时）</label>
+                <input v-model.number="videosRateLimitCooldownHours" type="number" min="1" max="24" step="1" class="col-span-2 rounded-2xl border border-input bg-background px-3 py-2" />
+
+                <label class="col-span-2 text-xs text-muted-foreground">会话缓存秒数</label>
+                <input v-model.number="localSettings.retry.session_cache_ttl_seconds" type="number" min="0" class="col-span-2 rounded-2xl border border-input bg-background px-3 py-2" />
+
+                <div class="col-span-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <span>自动刷新账号间隔（秒，0=关闭）</span>
+                  <HelpTip text="仅在数据库存储启用时生效：用于检测账号配置变化并重载列表，不会刷新 Cookie。" />
+                </div>
+                <input v-model.number="localSettings.retry.auto_refresh_accounts_seconds" type="number" min="0" max="600" class="col-span-2 rounded-2xl border border-input bg-background px-3 py-2" />
+              </div>
+            </div>
+
+          </div>
+
+          <div class="space-y-4">
+            <div class="rounded-2xl border border-border bg-card p-4">
               <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">自动注册/刷新</p>
               <div class="mt-4 space-y-3">
-                <div class="grid grid-cols-2 items-center gap-x-6 gap-y-2">
-                  <div class="flex items-center justify-start gap-2">
-                    <Checkbox v-model="localSettings.basic.browser_headless">
-                      无头浏览器
-                    </Checkbox>
-                    <HelpTip text="无头模式适用于服务器环境（如 Docker）。若注册/刷新失败，建议关闭。" />
-                  </div>
+                <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <span>浏览器模式</span>
+                  <HelpTip text="normal=正常窗口；silent=静默最小化（有头但尽量不抢焦点）；headless=无头。" />
                 </div>
+                <SelectMenu
+                  v-model="localSettings.basic.browser_mode"
+                  :options="browserModeOptions"
+                  class="w-full"
+                />
                 <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span>浏览器引擎</span>
                   <HelpTip text="UC: 支持无头/有头，但可能失败。DP: 支持无头/有头，更稳定，推荐使用。" />
@@ -174,9 +126,6 @@
                   :options="tempMailProviderOptions"
                   class="w-full"
                 />
-                <div class="rounded-2xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-                  <span class="font-medium">⚠️ 提示：</span>除 DuckMail 外，其它邮箱服务未经充分测试（直接合并 PR），如遇问题请提交 Issues
-                </div>
                 <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span>临时邮箱代理</span>
                   <HelpTip text="启用后临时邮箱请求将使用账户操作代理地址。" />
@@ -204,7 +153,7 @@
                     class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
                     placeholder="dk_xxx"
                   />
-                  <label class="block text-xs text-muted-foreground">默认注册域名（推荐）</label>
+                  <label class="block text-xs text-muted-foreground">DuckMail 域名（推荐）</label>
                   <input
                     v-model="localSettings.basic.register_domain"
                     type="text"
@@ -285,7 +234,7 @@
                     class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
                     placeholder="X-API-Key"
                   />
-                  <label class="block text-xs text-muted-foreground">GPTMail 邮箱域名（可选）</label>
+                  <label class="block text-xs text-muted-foreground">GPTMail 邮箱域名（可选，不带@）</label>
                   <input
                     v-model="localSettings.basic.gptmail_domain"
                     type="text"
@@ -294,16 +243,34 @@
                   />
                 </template>
 
-                <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                  <span>过期刷新窗口（小时）</span>
-                  <HelpTip text="当账号距离过期小于等于该值时，会触发自动登录刷新（更新 cookie/session）。" />
-                </div>
-                <input
-                  v-model.number="localSettings.basic.refresh_window_hours"
-                  type="number"
-                  min="0"
-                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
-                />
+                <!-- Cloudflare Mail 配置 -->
+                <template v-if="localSettings.basic.temp_mail_provider === 'cfmail'">
+                  <Checkbox v-model="localSettings.basic.cfmail_verify_ssl">
+                    Cloudflare Mail SSL 校验
+                  </Checkbox>
+                  <label class="block text-xs text-muted-foreground">Cloudflare Mail API 地址</label>
+                  <input
+                    v-model="localSettings.basic.cfmail_base_url"
+                    type="text"
+                    class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="https://your-cfmail-instance.example.com"
+                  />
+                  <label class="block text-xs text-muted-foreground">访问密码（x-custom-auth，无密码留空）</label>
+                  <input
+                    v-model="localSettings.basic.cfmail_api_key"
+                    type="text"
+                    class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="留空则不使用密码"
+                  />
+                  <label class="block text-xs text-muted-foreground">邮箱域名（可选，不带@）</label>
+                  <input
+                    v-model="localSettings.basic.cfmail_domain"
+                    type="text"
+                    class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="留空则随机选择"
+                  />
+                </template>
+
                 <label class="block text-xs text-muted-foreground">默认注册数量</label>
                 <input
                   v-model.number="localSettings.basic.register_default_count"
@@ -313,43 +280,14 @@
                 />
               </div>
             </div>
-
           </div>
 
           <div class="space-y-4">
             <div class="rounded-2xl border border-border bg-card p-4">
-              <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">重试</p>
-              <div class="mt-4 grid grid-cols-2 gap-3 text-sm">
-                <label class="col-span-2 text-xs text-muted-foreground">新会话尝试次数</label>
-                <input v-model.number="localSettings.retry.max_new_session_tries" type="number" min="1" class="col-span-2 rounded-2xl border border-input bg-background px-3 py-2" />
-
-                <label class="col-span-2 text-xs text-muted-foreground">请求重试次数</label>
-                <input v-model.number="localSettings.retry.max_request_retries" type="number" min="0" class="col-span-2 rounded-2xl border border-input bg-background px-3 py-2" />
-
-                <label class="col-span-2 text-xs text-muted-foreground">账号切换次数</label>
-                <input v-model.number="localSettings.retry.max_account_switch_tries" type="number" min="1" class="col-span-2 rounded-2xl border border-input bg-background px-3 py-2" />
-
-                <label class="col-span-2 text-xs text-muted-foreground">失败阈值</label>
-                <input v-model.number="localSettings.retry.account_failure_threshold" type="number" min="1" class="col-span-2 rounded-2xl border border-input bg-background px-3 py-2" />
-
-                <label class="col-span-2 text-xs text-muted-foreground">限流冷却（小时）</label>
-                <input v-model.number="rateLimitCooldownHours" type="number" min="1" max="12" step="1" class="col-span-2 rounded-2xl border border-input bg-background px-3 py-2" />
-
-                <label class="col-span-2 text-xs text-muted-foreground">会话缓存秒数</label>
-                <input v-model.number="localSettings.retry.session_cache_ttl_seconds" type="number" min="0" class="col-span-2 rounded-2xl border border-input bg-background px-3 py-2" />
-
-                <div class="col-span-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                  <span>自动刷新账号间隔（秒，0禁用）</span>
-                  <HelpTip text="仅在数据库存储启用时生效：用于检测账号配置变化并重载列表，不会刷新 cookie。文件存储模式不会触发。" />
-                </div>
-                <input v-model.number="localSettings.retry.auto_refresh_accounts_seconds" type="number" min="0" max="3600" class="col-span-2 rounded-2xl border border-input bg-background px-3 py-2" />
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">图像生成</p>
+                <HelpTip text="不建议开启图像生成功能，容易思考不出图，建议用gemini-imagen" />
               </div>
-            </div>
-          </div>
-
-          <div class="space-y-4">
-            <div class="rounded-2xl border border-border bg-card p-4">
-              <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">图像生成</p>
               <div class="mt-4 space-y-3">
                 <Checkbox v-model="localSettings.image_generation.enabled">
                   启用图像生成
@@ -383,6 +321,46 @@
                   placement="up"
                   class="w-full"
                 />
+              </div>
+            </div>
+
+            <div class="rounded-2xl border border-border bg-card p-4">
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">每日配额</p>
+                <HelpTip text="基于 Google 官方限额的主动配额计数，达到上限后自动切换账号。0 表示不限制该类型。" />
+              </div>
+              <div class="mt-4 space-y-3">
+                <Checkbox v-model="localSettings.quota_limits.enabled">
+                  启用主动配额计数
+                </Checkbox>
+                <label class="block text-xs text-muted-foreground">对话每日上限</label>
+                <input
+                  v-model.number="localSettings.quota_limits.text_daily_limit"
+                  type="number"
+                  min="0"
+                  max="9999"
+                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="120"
+                />
+                <label class="block text-xs text-muted-foreground">绘图每日上限</label>
+                <input
+                  v-model.number="localSettings.quota_limits.images_daily_limit"
+                  type="number"
+                  min="0"
+                  max="9999"
+                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="2"
+                />
+                <label class="block text-xs text-muted-foreground">视频每日上限</label>
+                <input
+                  v-model.number="localSettings.quota_limits.videos_daily_limit"
+                  type="number"
+                  min="0"
+                  max="9999"
+                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="1"
+                />
+                <p class="text-xs text-muted-foreground">每日北京时间 16:00 重置（对齐 Google 太平洋时间午夜）</p>
               </div>
             </div>
 
@@ -449,23 +427,49 @@ const isSaving = ref(false)
 const errorMessage = ref('')
 
 // 429冷却时间：小时 ↔ 秒 的转换
-const rateLimitCooldownHours = computed({
-  get: () => {
-    if (!localSettings.value?.retry?.rate_limit_cooldown_seconds) return 1
-    const seconds = localSettings.value.retry.rate_limit_cooldown_seconds
-    const hours = Math.round(seconds / 3600)
-    return hours < 1 || hours > 12 ? 1 : hours
-  },
+const DEFAULT_COOLDOWN_HOURS = {
+  text: 2,
+  images: 4,
+  videos: 4
+} as const
+
+const toCooldownHours = (seconds: number | undefined, fallbackHours: number) => {
+  if (!seconds) return fallbackHours
+  return Math.max(1, Math.round(seconds / 3600))
+}
+
+const createCooldownHours = (
+  key: 'text_rate_limit_cooldown_seconds' | 'images_rate_limit_cooldown_seconds' | 'videos_rate_limit_cooldown_seconds',
+  fallbackHours: number
+) => computed({
+  get: () => toCooldownHours(localSettings.value?.retry?.[key], fallbackHours),
   set: (hours: number) => {
     if (localSettings.value?.retry) {
-      localSettings.value.retry.rate_limit_cooldown_seconds = hours * 3600
+      localSettings.value.retry[key] = hours * 3600
     }
   }
 })
 
+const textRateLimitCooldownHours = createCooldownHours(
+  'text_rate_limit_cooldown_seconds',
+  DEFAULT_COOLDOWN_HOURS.text
+)
+const imagesRateLimitCooldownHours = createCooldownHours(
+  'images_rate_limit_cooldown_seconds',
+  DEFAULT_COOLDOWN_HOURS.images
+)
+const videosRateLimitCooldownHours = createCooldownHours(
+  'videos_rate_limit_cooldown_seconds',
+  DEFAULT_COOLDOWN_HOURS.videos
+)
+
 const browserEngineOptions = [
-  { label: 'UC - 支持无头/有头', value: 'uc' },
-  { label: 'DP - 支持无头/有头（推荐）', value: 'dp' },
+  { label: 'DP - 支持无头/有头', value: 'dp' },
+]
+const browserModeOptions = [
+  { label: 'normal - 正常窗口', value: 'normal' },
+  { label: 'silent - 静默最小化', value: 'silent' },
+  { label: 'headless - 无头', value: 'headless' },
 ]
 const tempMailProviderOptions = mailProviderOptions
 const imageOutputOptions = [
@@ -505,27 +509,15 @@ watch(settings, (value) => {
   next.video_generation = next.video_generation || { output_format: 'html' }
   next.video_generation.output_format ||= 'html'
   next.basic = next.basic || {}
-  
-  // 初始化 API Keys
-  if (!next.basic.api_keys) {
-    next.basic.api_keys = []
-  }
-  // 迁移旧版 Key
-  if (next.basic.api_keys.length === 0 && next.basic.api_key) {
-    next.basic.api_keys.push({
-      key: next.basic.api_key,
-      mode: 'memory',
-      remark: '默认密钥',
-      created_at: Math.floor(Date.now() / 1000)
-    })
-  }
-
   next.basic.duckmail_base_url ||= 'https://api.duckmail.sbs'
   next.basic.duckmail_verify_ssl = next.basic.duckmail_verify_ssl ?? true
-  next.basic.proxy_for_auth = typeof next.basic.proxy_for_auth === 'string' ? next.basic.proxy_for_auth : ''
-  next.basic.proxy_for_chat = typeof next.basic.proxy_for_chat === 'string' ? next.basic.proxy_for_chat : ''
   next.basic.browser_engine = next.basic.browser_engine || 'dp'
-  next.basic.browser_headless = next.basic.browser_headless ?? false
+  const normalizedBrowserMode =
+    next.basic.browser_mode === 'normal' || next.basic.browser_mode === 'silent' || next.basic.browser_mode === 'headless'
+      ? next.basic.browser_mode
+      : ((next.basic.browser_headless ?? false) ? 'headless' : 'normal')
+  next.basic.browser_mode = normalizedBrowserMode
+  next.basic.browser_headless = normalizedBrowserMode === 'headless'
   next.basic.refresh_window_hours = Number.isFinite(next.basic.refresh_window_hours)
     ? next.basic.refresh_window_hours
     : 1
@@ -563,10 +555,31 @@ watch(settings, (value) => {
   next.basic.gptmail_domain = typeof next.basic.gptmail_domain === 'string'
     ? next.basic.gptmail_domain
     : ''
+  next.basic.cfmail_base_url = typeof next.basic.cfmail_base_url === 'string'
+    ? next.basic.cfmail_base_url
+    : ''
+  next.basic.cfmail_api_key = typeof next.basic.cfmail_api_key === 'string'
+    ? next.basic.cfmail_api_key
+    : ''
+  next.basic.cfmail_verify_ssl = next.basic.cfmail_verify_ssl ?? true
+  next.basic.cfmail_domain = typeof next.basic.cfmail_domain === 'string'
+    ? next.basic.cfmail_domain
+    : ''
   next.retry = next.retry || {}
   next.retry.auto_refresh_accounts_seconds = Number.isFinite(next.retry.auto_refresh_accounts_seconds)
     ? next.retry.auto_refresh_accounts_seconds
     : 60
+  next.quota_limits = next.quota_limits || {}
+  next.quota_limits.enabled = next.quota_limits.enabled ?? true
+  next.quota_limits.text_daily_limit = Number.isFinite(next.quota_limits.text_daily_limit)
+    ? next.quota_limits.text_daily_limit
+    : 120
+  next.quota_limits.images_daily_limit = Number.isFinite(next.quota_limits.images_daily_limit)
+    ? next.quota_limits.images_daily_limit
+    : 2
+  next.quota_limits.videos_daily_limit = Number.isFinite(next.quota_limits.videos_daily_limit)
+    ? next.quota_limits.videos_daily_limit
+    : 1
   localSettings.value = next
 })
 
@@ -574,33 +587,19 @@ onMounted(async () => {
   await settingsStore.loadSettings()
 })
 
-const addApiKey = () => {
-  if (!localSettings.value || !localSettings.value.basic) return
-  
-  if (!localSettings.value.basic.api_keys) {
-    localSettings.value.basic.api_keys = []
-  }
-  
-  localSettings.value.basic.api_keys.push({
-    key: '',
-    mode: 'memory',
-    remark: '',
-    created_at: Math.floor(Date.now() / 1000)
-  })
-}
-
-const removeApiKey = (index: number) => {
-  if (localSettings.value?.basic?.api_keys) {
-    localSettings.value.basic.api_keys.splice(index, 1)
-  }
-}
-
 const handleSave = async () => {
   if (!localSettings.value) return
   errorMessage.value = ''
   isSaving.value = true
 
   try {
+    localSettings.value.basic.browser_mode =
+      localSettings.value.basic.browser_mode === 'normal' ||
+      localSettings.value.basic.browser_mode === 'silent' ||
+      localSettings.value.basic.browser_mode === 'headless'
+        ? localSettings.value.basic.browser_mode
+        : 'normal'
+    localSettings.value.basic.browser_headless = localSettings.value.basic.browser_mode === 'headless'
     await settingsStore.updateSettings(localSettings.value)
     toast.success('设置保存成功')
   } catch (error: any) {

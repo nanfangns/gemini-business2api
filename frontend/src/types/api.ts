@@ -3,6 +3,9 @@
 export interface QuotaStatus {
   available: boolean
   remaining_seconds?: number
+  reason?: string  // 受限原因（如"对话配额受限"）
+  daily_used?: number
+  daily_limit?: number
 }
 
 export interface AccountQuotaStatus {
@@ -24,13 +27,15 @@ export interface AdminAccount {
   remaining_display: string
   is_available: boolean
   error_count: number
+  failure_count: number
   disabled: boolean
+  disabled_reason: string | null
   cooldown_seconds: number
   cooldown_reason: string | null
   conversation_count: number
   quota_status: AccountQuotaStatus
-  account_expires_at?: string
-  account_remaining_days?: number | null
+  trial_end?: string | null
+  trial_days_remaining?: number | null
 }
 
 export interface AccountsListResponse {
@@ -52,10 +57,10 @@ export interface AccountConfigItem {
   mail_refresh_token?: string
   mail_tenant?: string
   mail_base_url?: string
+  mail_api_key?: string
   mail_jwt_token?: string
   mail_verify_ssl?: boolean
   mail_domain?: string
-  account_expires_at?: string
 }
 
 export interface AccountsConfigResponse {
@@ -73,21 +78,11 @@ export interface Stats {
   requests_per_hour: number
 }
 
-export type TempMailProvider = 'duckmail' | 'moemail' | 'freemail' | 'gptmail'
-
-export type ApiKeyMode = 'memory' | 'fast'
-
-export interface ApiKeyConfig {
-  key: string
-  mode: ApiKeyMode
-  remark: string
-  created_at: number
-}
+export type TempMailProvider = 'duckmail' | 'moemail' | 'freemail' | 'gptmail' | 'cfmail'
 
 export interface Settings {
   basic: {
     api_key?: string
-    api_keys?: ApiKeyConfig[]
     base_url?: string
     proxy_for_auth?: string
     proxy_for_chat?: string
@@ -106,20 +101,32 @@ export interface Settings {
     gptmail_base_url?: string
     gptmail_api_key?: string
     gptmail_verify_ssl?: boolean
+    gptmail_domain?: string
+    cfmail_base_url?: string
+    cfmail_api_key?: string
+    cfmail_verify_ssl?: boolean
+    cfmail_domain?: string
     browser_engine?: string
+    browser_mode?: 'normal' | 'silent' | 'headless'
     browser_headless?: boolean
     refresh_window_hours?: number
     register_default_count?: number
     register_domain?: string
+    image_expire_hours?: number
   }
   retry: {
-    max_new_session_tries: number
-    max_request_retries: number
     max_account_switch_tries: number
     account_failure_threshold: number
-    rate_limit_cooldown_seconds: number
+    text_rate_limit_cooldown_seconds: number
+    images_rate_limit_cooldown_seconds: number
+    videos_rate_limit_cooldown_seconds: number
     session_cache_ttl_seconds: number
     auto_refresh_accounts_seconds: number
+    scheduled_refresh_enabled?: boolean
+    scheduled_refresh_interval_minutes?: number
+    scheduled_refresh_cron?: string
+    refresh_cooldown_hours?: number
+    verification_code_resend_count?: number
   }
   public_display: {
     logo_url?: string
@@ -132,6 +139,12 @@ export interface Settings {
   }
   session: {
     expire_hours: number
+  }
+  quota_limits: {
+    enabled: boolean
+    text_daily_limit: number
+    images_daily_limit: number
+    videos_daily_limit: number
   }
 }
 
@@ -198,6 +211,8 @@ export interface AdminStatsTrend {
   failed_requests: number[]
   rate_limited_requests: number[]
   model_requests?: Record<string, number[]>
+  model_ttfb_times?: Record<string, number[]>
+  model_total_times?: Record<string, number[]>
 }
 
 export interface AdminStats {
@@ -206,6 +221,8 @@ export interface AdminStats {
   failed_accounts: number
   rate_limited_accounts: number
   idle_accounts: number
+  success_count?: number
+  failed_count?: number
   trend: AdminStatsTrend
 }
 
@@ -258,7 +275,6 @@ export type AutomationStatus = 'pending' | 'running' | 'success' | 'failed' | 'c
 export interface RegisterTask {
   id: string
   count: number
-  mail_provider?: string
   domain?: string | null
   status: AutomationStatus
   progress: number

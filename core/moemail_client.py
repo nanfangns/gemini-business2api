@@ -24,7 +24,7 @@ class MoemailClient:
 
     def __init__(
         self,
-        base_url: str = "https://moemail.app",
+        base_url: str = "https://moemail.nanohajimi.mom",
         proxy: str = "",
         api_key: str = "",
         domain: str = "",
@@ -129,12 +129,15 @@ class MoemailClient:
         self._log("info", f"🎲 生成邮箱: {name}@{selected_domain}")
 
         try:
+            # 设置为 0 表示永久有效
+            self._log("info", f"⏰ 设置过期时间: 永久有效")
+
             res = self._request(
                 "POST",
                 f"{self.base_url}/api/emails/generate",
                 json={
                     "name": name,
-                    "expiryTime": 3600000,  # 1小时
+                    "expiryTime": 0,
                     "domain": selected_domain,
                 },
             )
@@ -196,6 +199,64 @@ class MoemailClient:
 
             self._log("info", f"📨 收到 {len(messages)} 封邮件，开始检查验证码...")
 
+            from datetime import datetime
+
+            def _parse_message_time(msg_obj) -> Optional[datetime]:
+                import re
+
+                time_keys = [
+                    "createdAt",
+                    "receivedAt",
+                    "sentAt",
+                    "created_at",
+                    "received_at",
+                    "sent_at",
+                ]
+                raw_time = None
+                for key in time_keys:
+                    if msg_obj.get(key) is not None:
+                        raw_time = msg_obj.get(key)
+                        break
+
+                if raw_time is None:
+                    return None
+
+                if isinstance(raw_time, (int, float)):
+                    timestamp = float(raw_time)
+                    if timestamp > 1e12:
+                        timestamp = timestamp / 1000.0
+                    return datetime.fromtimestamp(timestamp)
+
+                if isinstance(raw_time, str):
+                    raw_time = raw_time.strip()
+                    if raw_time.isdigit():
+                        timestamp = float(raw_time)
+                        if timestamp > 1e12:
+                            timestamp = timestamp / 1000.0
+                        return datetime.fromtimestamp(timestamp)
+
+                    # 处理 ISO 时间字符串
+                    try:
+                        # 截断纳秒到微秒
+                        raw_time = re.sub(r"(\.\d{6})\d+", r"\1", raw_time)
+                        return datetime.fromisoformat(raw_time.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+                    except Exception:
+                        return None
+
+                return None
+
+            def _looks_like_verification(msg_obj) -> bool:
+                subject = (msg_obj.get("subject") or "").strip()
+                if not subject:
+                    return False
+                import re
+                return re.search(r"(验证码|验证|verification|verify|passcode|security\s*code|one[-\s]?time|otp)", subject, re.IGNORECASE) is not None
+
+            messages_with_time = [(msg, _parse_message_time(msg)) for msg in messages]
+            if any(item[1] for item in messages_with_time):
+                messages_with_time.sort(key=lambda item: item[1] or datetime.min, reverse=True)
+                messages = [item[0] for item in messages_with_time]
+
             # 遍历邮件
             for idx, msg in enumerate(messages, 1):
                 msg_id = msg.get("id")
@@ -204,19 +265,13 @@ class MoemailClient:
 
                 # 时间过滤
                 if since_time:
-                    created_at = msg.get("createdAt") or msg.get("receivedAt")
-                    if created_at:
-                        try:
-                            from datetime import datetime
-                            import re
-                            # 截断纳秒到微秒
-                            created_at = re.sub(r'(\.\d{6})\d+', r'\1', created_at)
-                            msg_time = datetime.fromisoformat(created_at.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
-                            if msg_time < since_time:
-                                self._log("info", f"⏭️ 邮件 {idx} 时间过早，跳过")
-                                continue
-                        except Exception:
-                            pass
+                    msg_time = _parse_message_time(msg)
+                    if msg_time:
+                        if msg_time < since_time:
+                            continue
+
+                    if not _looks_like_verification(msg):
+                        continue
 
                 # 优先从邮件列表的 content 字段提取验证码（更高效）
                 list_content = msg.get("content") or ""
@@ -275,7 +330,7 @@ class MoemailClient:
         since_time=None,
     ) -> Optional[str]:
         """轮询获取验证码"""
-        max_retries = timeout // interval
+        max_retries = max(1, timeout // interval)
         self._log("info", f"⏱️ 开始轮询验证码 (超时 {timeout}秒, 间隔 {interval}秒, 最多 {max_retries} 次)")
 
         for i in range(1, max_retries + 1):

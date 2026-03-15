@@ -2,7 +2,8 @@
   <div ref="root" class="relative w-full">
     <button
       type="button"
-      class="ios-glass ios-pressable ios-focus-ring flex w-full items-center justify-between gap-2 rounded-full px-4 py-2 text-sm text-foreground"
+      class="flex w-full items-center justify-between gap-2 rounded-full border border-input bg-background px-4 py-2 text-sm
+             text-foreground transition-colors hover:border-primary"
       @click="toggle"
     >
       <span class="truncate">{{ currentLabel }}</span>
@@ -12,7 +13,7 @@
     </button>
     <div
       v-if="open"
-      class="ios-glass-strong absolute right-0 z-30 w-full space-y-1 rounded-2xl p-2"
+      class="absolute right-0 z-30 w-full space-y-1 rounded-2xl border border-border bg-card p-2 shadow-lg"
       :class="menuPositionClass"
     >
       <button
@@ -36,17 +37,13 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 type Option = { label: string; value: string }
 
-const props = withDefaults(defineProps<{
-  modelValue: string | string[] | undefined
+const props = defineProps<{
+  modelValue: string | string[]
   options: Array<string | Option>
   multiple?: boolean
   placeholder?: string
   placement?: 'up' | 'down'
-}>(), {
-  modelValue: undefined,
-  multiple: false,
-  placement: 'down'
-})
+}>()
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string | string[]): void
