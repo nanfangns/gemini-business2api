@@ -58,11 +58,11 @@ RUN chmod +x entrypoint.sh
 VOLUME ["/app/data"]
 
 # 声明端口
-EXPOSE 7860
+EXPOSE 8080
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:7860/health || exit 1
+    CMD curl -f http://localhost:8080/health || exit 1
 
 # 启动服务
 CMD ["./entrypoint.sh"]

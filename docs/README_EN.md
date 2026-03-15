@@ -145,8 +145,8 @@ python main.py
 
 ### Access
 
-- **Admin Panel**: `http://localhost:7860/` (Login with `ADMIN_KEY`)
-- **API Endpoint**: `http://localhost:7860/v1/chat/completions`
+- **Admin Panel**: `http://localhost:8080/` (Login with `ADMIN_KEY`)
+- **API Endpoint**: `http://localhost:8080/v1/chat/completions`
 
 ---
 
@@ -227,7 +227,7 @@ Fully OpenAI API compatible. Works with ChatGPT-Next-Web, LobeChat, OpenCat, and
 **Example:**
 
 ```bash
-curl http://localhost:7860/v1/chat/completions \
+curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer your-api-key" \
   -H "Content-Type: application/json" \
   -d '{

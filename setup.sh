@@ -164,7 +164,7 @@ if [ -f ".env" ]; then
     echo "     ${BLUE}uv run python main.py${NC}"
     echo ""
     echo "  3. Access the admin panel:"
-    echo "     ${BLUE}http://localhost:7860/${NC}"
+    echo "     ${BLUE}http://localhost:8080/${NC}"
     echo ""
     print_info "To activate virtual environment later, run:"
     echo "  ${BLUE}source .venv/bin/activate${NC}"

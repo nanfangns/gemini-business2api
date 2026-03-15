@@ -52,7 +52,7 @@ src/
 Create `.env.local`:
 
 ```bash
-VITE_API_BASE_URL=http://localhost:7860
+VITE_API_BASE_URL=http://localhost:8080
 ```
 
 ## Docker Build

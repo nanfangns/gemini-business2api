@@ -175,7 +175,7 @@ if exist .env (
     echo      .venv\Scripts\python.exe main.py
     echo.
     echo   3. Access the admin panel:
-    echo      http://localhost:7860/
+    echo      http://localhost:8080/
     echo.
     echo [INFO] To activate virtual environment later, run:
     echo   .venv\Scripts\activate.bat
